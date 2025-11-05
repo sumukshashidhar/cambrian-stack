@@ -44,7 +44,7 @@ def main(
     eval_interval: int = 500,
     log_interval: int = 10,
     grad_clip: float = 1.0,
-    target_mem_frac: float = 0.85,
+    target_mem_frac: float = 0.30,
     out_dir: Path = Path("out"),
     seed: int = 1337,
 ):

@@ -61,7 +61,10 @@ def train_diffusion(
     eval_interval: int = typer.Option(500, help="Eval every N steps"),
     log_interval: int = typer.Option(10, help="Log every N steps"),
     grad_clip: float = typer.Option(1.0, help="Grad clipping norm"),
-    target_mem_frac: float = typer.Option(0.85, help="Target per-GPU memory fraction for auto micro-batch"),
+    target_mem_frac: float = typer.Option(
+        0.30,
+        help="Target per-GPU memory fraction for auto micro-batch (keeps headroom for optimizer state).",
+    ),
     out_dir: str = typer.Option("out", help="Output root directory"),
     seed: int = typer.Option(1337, help="Seed for RNG"),
 ):
