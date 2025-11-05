@@ -2,6 +2,10 @@
 __pycache__/
 *.py[codz]
 *$py.class
+wandb/
+out/
+snap.txt
+export_py_structure.py
 
 # C extensions
 *.so
