@@ -1,0 +1,9 @@
+datasets:
+  dataset_name: roneneldan/TinyStories
+  train_split: train
+  test_split: validation
+logging:
+  sinks:
+    - wandb
+    - file
+model_configuration: # whatever karpathy recommends for the speedrun task.
