@@ -4,8 +4,11 @@ __pycache__/
 *$py.class
 wandb/
 out/
-snap.txt
-export_py_structure.py
+AGENTS.md
+references/
+agent/
+logs/
+outputs/
 
 # C extensions
 *.so
