@@ -3,7 +3,7 @@
 # Usage: ./scripts/train_transformer_all.sh [hydra overrides]
 
 set -e
-cd /home/sumukshashidhar/workdir/cambrian-stack
+# cd /home/sumukshashidhar/workdir/cambrian-stack
 source .venv/bin/activate
 
 if [ -f .env ]; then

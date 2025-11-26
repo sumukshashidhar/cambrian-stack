@@ -4,7 +4,7 @@
 
 set -e
 
-cd /home/sumukshashidhar/workdir/cambrian-stack
+# cd /home/sumukshashidhar/workdir/cambrian-stack
 source .venv/bin/activate
 
 # Load environment variables (HF_TOKEN, WANDB_PROJECT, WANDB_API_KEY)
