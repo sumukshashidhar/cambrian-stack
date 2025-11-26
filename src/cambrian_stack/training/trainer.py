@@ -300,7 +300,8 @@ def train_loop(
             and (step + 1) % cfg.training.sample_every == 0
         ):
             if not is_diffusion:
-                samples = generate_samples(model, tokenizer, EVAL_PROMPTS, device=device)
+                base_model = accelerator.unwrap_model(model)
+                samples = generate_samples(base_model, tokenizer, EVAL_PROMPTS, device=device)
                 for prompt, sample in zip(EVAL_PROMPTS, samples):
                     logger.info(f"\n{'='*20} Prompt: {prompt}\n{sample}\n")
                 wandb_run.log({f"samples/{i}": s for i, s in enumerate(samples)})
