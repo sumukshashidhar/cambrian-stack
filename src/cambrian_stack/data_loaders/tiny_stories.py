@@ -75,6 +75,7 @@ def get_dataloaders(cfg, accelerator=None) -> tuple[DataLoader, DataLoader, any]
         train_loader, val_loader, tokenizer
     """
     tokenizer = get_tokenizer(cfg.data.tokenizer_name)
+    tokenizer.model_max_length = cfg.model.max_seq_len
     
     train_dataset = TokenizedDataset(
         cfg.data.dataset_name,
@@ -94,14 +95,14 @@ def get_dataloaders(cfg, accelerator=None) -> tuple[DataLoader, DataLoader, any]
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.training.device_batch_size,
-        num_workers=cfg.data.num_workers,
+        num_workers=min(cfg.data.num_workers, 2),
         pin_memory=True,
         drop_last=True,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=cfg.training.device_batch_size,
-        num_workers=cfg.data.num_workers,
+        num_workers=min(cfg.data.num_workers, 2),
         pin_memory=True,
         drop_last=True,
     )
