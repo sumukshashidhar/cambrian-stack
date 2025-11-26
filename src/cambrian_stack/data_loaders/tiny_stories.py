@@ -41,7 +41,7 @@ class TokenizedDataset(IterableDataset):
         buffer = self.buffer
         for sample in dataset:
             text = sample["text"]
-            tokens = self.tokenizer.encode(text, add_special_tokens=False)
+            tokens = self.tokenizer.encode(text, add_special_tokens=False, truncation=True, max_length=self.seq_len + 1)
             buffer.extend(tokens)
             
             while len(buffer) >= self.seq_len + 1:
