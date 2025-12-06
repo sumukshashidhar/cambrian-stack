@@ -2,9 +2,9 @@
 
 defaults:
   - experiment: autoregressive
-  - model: transformer
+  - model: nanochat_d32
   - data: fineweb_edu
-  - training: transformer
+  - training: nanochat_depth32
   - logging: default
   - output: default
   - _self_
