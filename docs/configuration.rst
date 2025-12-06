@@ -10,6 +10,7 @@ Top-level entry configs
 * ``diffusion_transformer.yaml`` — discrete diffusion run
 * ``baseline_fineweb.yaml`` — autoregressive on FineWeb-Edu (streaming HF dataset)
 * ``baseline_fineweb_nanochat.yaml`` — FineWeb-Edu with nanochat-inspired training hyperparams
+* ``baseline_fineweb_nanochat_d32.yaml`` — FineWeb-Edu with nanochat-like depth-32 model and schedule
 
 Groups
 ------

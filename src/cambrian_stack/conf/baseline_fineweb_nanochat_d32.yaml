@@ -1,0 +1,16 @@
+# FineWeb-Edu with nanochat-inspired depth-32 model and training schedule
+
+defaults:
+  - experiment: autoregressive
+  - model: nanochat_d32
+  - data: fineweb_edu
+  - training: nanochat_depth32
+  - logging: default
+  - output: default
+  - _self_
+
+logging:
+  wandb_run: fineweb-nanochat-d32
+
+output:
+  dir: out/fineweb-nanochat-d32
