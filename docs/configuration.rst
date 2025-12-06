@@ -16,8 +16,8 @@ Groups
 
 * ``experiment/`` — selects experiment strategy (``autoregressive`` or ``diffusion``)
 * ``model/`` — architecture parameters (``transformer``, ``diffusion_transformer``)
-* ``data/`` — dataset/tokenizer settings (TinyStories defaults)
-* ``training/`` — optimization, schedule, eval, sampling, checkpoint cadence
+* ``data/`` — dataset/tokenizer settings (TinyStories, FineWeb-Edu)
+* ``training/`` — optimization, schedule, eval, sampling, checkpoint cadence (includes nanochat-like presets)
 * ``logging/`` — W&B and log cadence
 * ``output/`` — checkpoint directory
 

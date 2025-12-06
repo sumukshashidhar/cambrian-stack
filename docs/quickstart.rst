@@ -7,6 +7,12 @@ Train the baseline transformer on TinyStories (multi-GPU if available):
 
    ./scripts/train_baseline_transformer.sh
 
+Train on FineWeb-Edu with nanochat-like depth-32 preset:
+
+.. code-block:: bash
+
+   python -m cambrian_stack.train --config-name=baseline_fineweb
+
 Single GPU minimal run:
 
 .. code-block:: bash
