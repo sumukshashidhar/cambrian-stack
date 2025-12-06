@@ -1,0 +1,16 @@
+# Baseline autoregressive transformer on FineWeb-Edu with nanochat-like training hyperparams
+
+defaults:
+  - experiment: autoregressive
+  - model: transformer
+  - data: fineweb_edu
+  - training: nanochat_like
+  - logging: default
+  - output: default
+  - _self_
+
+logging:
+  wandb_run: baseline-fineweb-nanochat
+
+output:
+  dir: out/baseline-fineweb-nanochat
