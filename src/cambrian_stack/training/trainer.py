@@ -8,17 +8,14 @@ import time
 from pathlib import Path
 
 import torch
-from torch import Tensor
 from torch.optim import AdamW
 from accelerate import Accelerator
 from loguru import logger
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
-from cambrian_stack.models import create_model, BaseModel
-from cambrian_stack.data_loaders import get_dataloaders, corrupt_tokens
 from cambrian_stack.utils.logging import setup_logging, setup_wandb
-from cambrian_stack.evaluation.metrics import evaluate_loss, generate_samples, EVAL_PROMPTS
-from omegaconf import OmegaConf
+from cambrian_stack.experiments import create_experiment
+from cambrian_stack.models import BaseModel
 
 
 # =============================================================================
@@ -36,9 +33,11 @@ def train(cfg: DictConfig) -> None:
     setup_logging(logs_dir)
     wandb_run = setup_wandb(cfg, accelerator.is_main_process)
     
-    # Chapter 2: Create components
-    model = create_model(cfg.model)
-    train_loader, val_loader, tokenizer = get_dataloaders(cfg, accelerator=accelerator)
+    # Chapter 2: Create experiment + components
+    exp_cfg = cfg.experiment if "experiment" in cfg else {"type": "autoregressive"}
+    experiment = create_experiment(exp_cfg)
+    model = experiment.build_model(cfg.model)
+    train_loader, val_loader, tokenizer = experiment.build_dataloaders(cfg, accelerator=accelerator)
     optimizer = create_optimizer(model, cfg.training)
     
     # Chapter 3: Prepare for distributed training
@@ -51,6 +50,7 @@ def train(cfg: DictConfig) -> None:
     
     # Chapter 5: Training loop
     train_loop(
+        experiment=experiment,
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -74,81 +74,6 @@ def train(cfg: DictConfig) -> None:
 def setup_accelerator() -> Accelerator:
     """Initialize accelerator for distributed training."""
     return Accelerator()
-
-
-# =============================================================================
-# DIFFUSION HELPERS
-# =============================================================================
-
-def is_diffusion_model(model: BaseModel) -> bool:
-    """Check whether model is a diffusion transformer."""
-    if hasattr(model, "config") and hasattr(model.config, "diffusion_steps"):
-        return True
-    if hasattr(model, "module"):
-        mod = model.module
-        return hasattr(mod, "config") and hasattr(mod.config, "diffusion_steps")
-    return False
-
-
-def diffusion_train_step(model, batch, cfg, device, accelerator, grad_accum_steps: int) -> torch.Tensor:
-    """Single micro-step for diffusion training."""
-    base_model = accelerator.unwrap_model(model)
-    tokens = batch["input_ids"].to(device)
-    corruption_rate = getattr(cfg.data, "corruption_rate", 0.15)
-    
-    corrupted, targets, timesteps = corrupt_tokens(
-        tokens,
-        mask_token_id=base_model.config.mask_token_id,
-        corruption_rate=corruption_rate,
-        diffusion_steps=base_model.config.diffusion_steps,
-    )
-    
-    logits, loss = model(corrupted, timesteps, targets)
-    loss = loss / grad_accum_steps
-    accelerator.backward(loss)
-    return loss
-
-
-def diffusion_eval_step(model, val_loader, cfg, device, accelerator) -> dict[str, float]:
-    """Evaluate diffusion model on masked recovery."""
-    base_model = accelerator.unwrap_model(model)
-    model_was_training = model.training
-    model.eval()
-    total_loss = 0.0
-    total_masked_acc = 0.0
-    batches = 0
-    
-    with torch.no_grad():
-        for batches, batch in enumerate(val_loader, start=1):
-            if batches > cfg.training.eval_batches:
-                batches -= 1
-                break
-            tokens = batch["input_ids"].to(device)
-            corruption_rate = getattr(cfg.data, "corruption_rate", 0.15)
-            corrupted, targets, timesteps = corrupt_tokens(
-                tokens,
-                mask_token_id=base_model.config.mask_token_id,
-                corruption_rate=corruption_rate,
-                diffusion_steps=base_model.config.diffusion_steps,
-            )
-            logits, loss = model(corrupted, timesteps, targets)
-            total_loss += loss.item()
-            
-            preds = logits.argmax(dim=-1)
-            mask = corrupted.eq(model.config.mask_token_id)
-            masked_acc = ((preds == targets) & mask).float().sum() / mask.sum().clamp(min=1)
-            total_masked_acc += masked_acc.item()
-    
-    avg_loss = total_loss / max(batches, 1)
-    avg_masked_acc = total_masked_acc / max(batches, 1)
-    
-    if model_was_training:
-        model.train()
-    
-    return {
-        "val_loss": avg_loss,
-        "val_masked_accuracy": avg_masked_acc,
-    }
 
 
 def create_optimizer(model: BaseModel, training_cfg) -> AdamW:
@@ -204,7 +129,8 @@ def get_lr_multiplier(step: int, cfg: DictConfig) -> float:
 # =============================================================================
 
 def train_loop(
-    model: BaseModel,
+    experiment,
+    model,
     train_loader,
     val_loader,
     optimizer: AdamW,
@@ -221,7 +147,7 @@ def train_loop(
     tokens_per_step = (
         cfg.training.device_batch_size * cfg.model.max_seq_len * max(1, accelerator.num_processes) * grad_accum_steps
     )
-    is_diffusion = is_diffusion_model(model)
+    can_sample = experiment.supports_sampling()
     
     for step in range(cfg.training.max_steps):
         step_start = time.perf_counter()
@@ -241,14 +167,7 @@ def train_loop(
                 train_iter = iter(train_loader)
                 batch = next(train_iter)
             
-            if is_diffusion:
-                loss = diffusion_train_step(model, batch, cfg, device, accelerator, grad_accum_steps)
-            else:
-                x = batch["input_ids"].to(device)
-                y = batch["labels"].to(device)
-                _, loss = model(x, y)
-                loss = loss / grad_accum_steps
-                accelerator.backward(loss)
+            loss = experiment.training_step(model, batch, cfg, accelerator, grad_accum_steps)
             total_loss += loss.detach()
         
         # 3. Clip gradients
@@ -279,32 +198,29 @@ def train_loop(
         
         # 6. Evaluate
         if cfg.training.eval_every > 0 and (step + 1) % cfg.training.eval_every == 0:
-            if is_diffusion:
-                val_metrics = diffusion_eval_step(model, val_loader, cfg, device, accelerator)
-                if accelerator.is_main_process:
-                    logger.info(
-                        f"[eval] step {step:05d} | val_loss {val_metrics['val_loss']:.4f} "
-                        f"| val_masked_acc {val_metrics['val_masked_accuracy']:.3f}"
-                    )
-                    wandb_run.log({"step": step, **val_metrics})
-            else:
-                val_loss, val_ppl = evaluate_loss(model, val_loader, cfg.training.eval_batches, device, accelerator)
-                if accelerator.is_main_process:
-                    logger.info(f"[eval] step {step:05d} | val_loss {val_loss:.4f} | val_ppl {val_ppl:.2f}")
-                    wandb_run.log({"step": step, "val/loss": val_loss, "val/perplexity": val_ppl})
+            val_metrics = experiment.evaluate(model, val_loader, cfg, device, accelerator)
+            if accelerator.is_main_process:
+                formatted = " | ".join(f"{k} {v:.4f}" for k, v in val_metrics.items())
+                logger.info(f"[eval] step {step:05d} | {formatted}")
+                wandb_run.log({"step": step, **val_metrics})
         
         # 7. Generate samples
         if (
-            accelerator.is_main_process
+            can_sample
+            and accelerator.is_main_process
             and cfg.training.sample_every > 0
             and (step + 1) % cfg.training.sample_every == 0
         ):
-            if not is_diffusion:
-                base_model = accelerator.unwrap_model(model)
-                samples = generate_samples(base_model, tokenizer, EVAL_PROMPTS, device=device)
-                for prompt, sample in zip(EVAL_PROMPTS, samples):
+            base_model = accelerator.unwrap_model(model)
+            samples = experiment.sample(base_model, tokenizer, cfg, device=device)  # type: ignore[attr-defined]
+            prompts = getattr(cfg.training, "sample_prompts", None)
+            if prompts:
+                for prompt, sample in zip(prompts, samples):
                     logger.info(f"\n{'='*20} Prompt: {prompt}\n{sample}\n")
-                wandb_run.log({f"samples/{i}": s for i, s in enumerate(samples)})
+            else:
+                for i, sample in enumerate(samples):
+                    logger.info(f"\n{'='*20} Sample {i}\n{sample}\n")
+            wandb_run.log({f"samples/{i}": s for i, s in enumerate(samples)})
         
         # 8. Save checkpoint
         if cfg.training.save_every > 0 and (step + 1) % cfg.training.save_every == 0:

@@ -1,0 +1,6 @@
+# GPT-style autoregressive transformer
+type: transformer
+depth: 12
+max_seq_len: 1024
+vocab_size: 50257
+dropout: 0.0

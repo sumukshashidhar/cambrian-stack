@@ -147,10 +147,10 @@ print(tokenizer.decode(output[0]))
 
 ## Configuration
 
-Configs live in `configs/`. Key parameters:
+Configs live in `src/cambrian_stack/conf/`. Key parameters:
 
 ```yaml
-# configs/baseline_transformer.yaml
+# src/cambrian_stack/conf/baseline_transformer.yaml
 
 model:
   type: transformer           # transformer | diffusion_transformer
@@ -172,7 +172,7 @@ output:
 
 ### Create a new experiment
 
-1. Copy an existing config: `cp configs/baseline_transformer.yaml configs/my_experiment.yaml`
+1. Copy an existing config: `cp src/cambrian_stack/conf/baseline_transformer.yaml src/cambrian_stack/conf/my_experiment.yaml`
 2. Modify parameters
 3. Run: `./scripts/train_baseline_transformer.sh --config-name=my_experiment`
 
@@ -182,9 +182,15 @@ output:
 
 ```
 cambrian-stack/
-├── configs/                    # Hydra config files
+├── src/cambrian_stack/conf/    # Hydra config files (grouped)
 │   ├── baseline_transformer.yaml
-│   └── diffusion_transformer.yaml
+│   ├── diffusion_transformer.yaml
+│   ├── experiment/
+│   ├── model/
+│   ├── data/
+│   ├── training/
+│   ├── logging/
+│   └── output/
 ├── src/cambrian_stack/
 │   ├── models/
 │   │   ├── transformer.py      # GPT-style autoregressive
@@ -248,7 +254,7 @@ MODEL_REGISTRY["my_model"] = MyModel
 CONFIG_REGISTRY["my_model"] = MyModelConfig
 ```
 
-3. Create a config file `configs/my_model.yaml` with `model.type: my_model`
+3. Create a config file `src/cambrian_stack/conf/my_model.yaml` with `model.type: my_model`
 
 ---
 

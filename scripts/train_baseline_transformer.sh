@@ -1,5 +1,6 @@
 #!/bin/bash
 # Train baseline transformer on TinyStories using all available GPUs.
+# Hydra configs now live under src/cambrian_stack/conf/.
 # Usage: ./scripts/train_baseline_transformer.sh [extra hydra args]
 
 set -e

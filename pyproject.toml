@@ -8,10 +8,6 @@ authors = [
     { name = "sumukshashidhar", email = "sumuks2@illinois.edu" }
 ]
 dependencies = [
-    # Core ML
-    "torch>=2.0.0",
-    "accelerate>=0.25.0",
-    
     # Data & Tokenization
     "datasets>=4.4.1",
     "transformers>=4.35.0",
@@ -33,6 +29,16 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",
+    "torch>=2.0.0",
+    "accelerate>=0.25.0",
+]
+ml = [
+    "torch>=2.0.0",
+    "accelerate>=0.25.0",
+]
+docs = [
+    "sphinx>=7.2.0",
+    "furo>=2024.1.0",
 ]
 
 [build-system]

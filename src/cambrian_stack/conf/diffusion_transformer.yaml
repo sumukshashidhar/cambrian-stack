@@ -1,0 +1,16 @@
+# Diffusion transformer config
+
+defaults:
+  - experiment: diffusion
+  - model: diffusion_transformer
+  - data: tiny_stories
+  - training: diffusion
+  - logging: default
+  - output: default
+  - _self_
+
+logging:
+  wandb_run: diffusion-d12
+
+output:
+  dir: out/diffusion-d12

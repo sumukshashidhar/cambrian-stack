@@ -1,7 +1,7 @@
 """Tests for diffusion data corruption utilities."""
 import torch
 
-from cambrian_stack.data_loaders.tiny_stories import corrupt_tokens
+from cambrian_stack.experiments.transforms import corrupt_tokens
 
 
 def test_corrupt_tokens_masks_fraction():
@@ -21,4 +21,3 @@ def test_corrupt_tokens_no_mask_when_zero_rate():
     
     assert torch.equal(corrupted, tokens)
     assert timesteps.item() == 0
-
