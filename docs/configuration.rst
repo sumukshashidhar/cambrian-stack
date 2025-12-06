@@ -8,6 +8,7 @@ Top-level entry configs
 
 * ``baseline_transformer.yaml`` — autoregressive GPT-style run
 * ``diffusion_transformer.yaml`` — discrete diffusion run
+* ``baseline_fineweb.yaml`` — autoregressive on FineWeb-Edu (streaming HF dataset)
 
 Groups
 ------

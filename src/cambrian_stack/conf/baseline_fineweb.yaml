@@ -1,0 +1,16 @@
+# Baseline autoregressive transformer on FineWeb-Edu
+
+defaults:
+  - experiment: autoregressive
+  - model: transformer
+  - data: fineweb_edu
+  - training: transformer
+  - logging: default
+  - output: default
+  - _self_
+
+logging:
+  wandb_run: baseline-fineweb
+
+output:
+  dir: out/baseline-fineweb
