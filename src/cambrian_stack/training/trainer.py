@@ -277,10 +277,10 @@ def train_loop(
         
         # 8. Save checkpoint
         if cfg.training.save_every > 0 and (step + 1) % cfg.training.save_every == 0:
-            save_checkpoint(model, optimizer, step + 1, cfg, accelerator)
+            save_checkpoint(model, optimizers, step + 1, cfg, accelerator)
 
     # Final checkpoint
-    save_checkpoint(model, optimizer, cfg.training.max_steps, cfg, accelerator)
+    save_checkpoint(model, optimizers, cfg.training.max_steps, cfg, accelerator)
 
 
 # =============================================================================
@@ -289,7 +289,7 @@ def train_loop(
 
 def save_checkpoint(
     model: BaseModel,
-    optimizer: AdamW,
+    optimizers: List[torch.optim.Optimizer],
     step: int,
     cfg: DictConfig,
     accelerator: Accelerator,
@@ -305,7 +305,7 @@ def save_checkpoint(
             "step": step,
             "config": OmegaConf.to_container(cfg, resolve=True),
             "model_state_dict": unwrapped.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
+            "optimizers_state_dict": [opt.state_dict() for opt in optimizers],
         }
         accelerator.save(state, checkpoint_path)
         logger.info(f"Saved checkpoint to {checkpoint_path}")
@@ -313,10 +313,11 @@ def save_checkpoint(
     accelerator.wait_for_everyone()
 
 
-def load_checkpoint(path: Path, model: BaseModel, optimizer: AdamW | None = None) -> int:
+def load_checkpoint(path: Path, model: BaseModel, optimizers: List[torch.optim.Optimizer] | None = None) -> int:
     """Load model checkpoint. Returns the step number."""
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
-    if optimizer is not None and "optimizer_state_dict" in checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if optimizers is not None and "optimizers_state_dict" in checkpoint:
+        for opt, sd in zip(optimizers, checkpoint["optimizers_state_dict"]):
+            opt.load_state_dict(sd)
     return int(checkpoint.get("step", 0))
