@@ -6,6 +6,7 @@ Each step is a well-named function that can be understood independently.
 import math
 import time
 from pathlib import Path
+from typing import List
 
 import torch
 from torch.optim import AdamW
@@ -16,6 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 from cambrian_stack.utils.logging import setup_logging, setup_wandb
 from cambrian_stack.experiments import create_experiment
 from cambrian_stack.models import BaseModel
+from cambrian_stack.optim import Muon
 
 
 # =============================================================================
@@ -38,12 +40,13 @@ def train(cfg: DictConfig) -> None:
     experiment = create_experiment(exp_cfg)
     model = experiment.build_model(cfg.model)
     train_loader, val_loader, tokenizer = experiment.build_dataloaders(cfg, accelerator=accelerator)
-    optimizer = create_optimizer(model, cfg.training)
+    optimizers = create_optimizers(model, cfg.training)
     
     # Chapter 3: Prepare for distributed training
-    model, optimizer, train_loader, val_loader = accelerator.prepare(
-        model, optimizer, train_loader, val_loader
-    )
+    prepared = accelerator.prepare(model, *optimizers, train_loader, val_loader)
+    model = prepared[0]
+    optimizers = list(prepared[1 : 1 + len(optimizers)])  # type: ignore[assignment]
+    train_loader, val_loader = prepared[-2], prepared[-1]
     
     # Chapter 4: Calculate training parameters
     grad_accum_steps = calculate_grad_accum_steps(cfg, accelerator)
@@ -54,7 +57,7 @@ def train(cfg: DictConfig) -> None:
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        optimizer=optimizer,
+        optimizers=optimizers,
         tokenizer=tokenizer,
         cfg=cfg,
         accelerator=accelerator,
@@ -76,14 +79,62 @@ def setup_accelerator() -> Accelerator:
     return Accelerator()
 
 
-def create_optimizer(model: BaseModel, training_cfg) -> AdamW:
-    """Create AdamW optimizer."""
-    return AdamW(
-        model.parameters(),
-        lr=training_cfg.learning_rate,
+def create_optimizers(model: BaseModel, training_cfg) -> List[torch.optim.Optimizer]:
+    """Create Muon (matrix params) + AdamW (embedding/positional) optimizers."""
+    # Learning rates (fallback to single lr if not provided)
+    emb_lr = training_cfg.get("embedding_lr", training_cfg.learning_rate)
+    unemb_lr = training_cfg.get("unembedding_lr", training_cfg.learning_rate)
+    matrix_lr = training_cfg.get("matrix_lr", training_cfg.learning_rate)
+    muon_momentum = training_cfg.get("muon_momentum", 0.95)
+    betas = training_cfg.get("adam_betas", (0.8, 0.95))
+    adam_eps = training_cfg.get("adam_eps", 1e-10)
+    
+    # Identify parameter groups
+    embedding_params = set()
+    if hasattr(model, "wte"):
+        embedding_params.update(model.wte.parameters())
+    if hasattr(model, "wpe"):
+        embedding_params.update(model.wpe.parameters())
+    if hasattr(model, "lm_head"):
+        embedding_params.update(model.lm_head.parameters())
+    
+    embedding_params = list(embedding_params)
+    matrix_params = [p for p in model.parameters() if p not in embedding_params]
+    
+    # Scale lr by sqrt dimension like nanochat
+    d_model = getattr(getattr(model, "config", None), "d_model", 768)
+    dmodel_lr_scale = (d_model / 768) ** -0.5
+    
+    # AdamW on embeddings (and tied lm_head if applicable)
+    fused_ok = False
+    try:
+        AdamW(embedding_params, lr=1e-3, fused=True)
+        fused_ok = True
+    except Exception:
+        fused_ok = False
+    adamw = AdamW(
+        [
+            dict(params=embedding_params, lr=emb_lr * dmodel_lr_scale),
+        ],
+        lr=emb_lr * dmodel_lr_scale,
+        betas=betas,
+        eps=adam_eps,
         weight_decay=training_cfg.weight_decay,
-        betas=(0.9, 0.95),
+        fused=fused_ok,
     )
+    for g in adamw.param_groups:
+        g["initial_lr"] = g["lr"]
+    
+    # Muon on matrix / rest
+    muon = Muon(
+        matrix_params,
+        lr=matrix_lr,
+        momentum=muon_momentum,
+        nesterov=True,
+        ns_steps=5,
+    )
+    
+    return [adamw, muon]
 
 
 def calculate_grad_accum_steps(cfg: DictConfig, accelerator: Accelerator) -> int:
@@ -133,7 +184,7 @@ def train_loop(
     model,
     train_loader,
     val_loader,
-    optimizer: AdamW,
+    optimizers: List[torch.optim.Optimizer],
     tokenizer,
     cfg: DictConfig,
     accelerator: Accelerator,
@@ -154,9 +205,10 @@ def train_loop(
         
         # 1. Update learning rate
         lr_mult = get_lr_multiplier(step, cfg)
-        base_lr = cfg.training.learning_rate
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = base_lr * lr_mult
+        for opt in optimizers:
+            for param_group in opt.param_groups:
+                base_lr = param_group.get("initial_lr", param_group["lr"])
+                param_group["lr"] = base_lr * lr_mult
         
         # 2. Accumulate gradients
         total_loss = torch.tensor(0.0, device=device)
@@ -174,8 +226,9 @@ def train_loop(
         accelerator.clip_grad_norm_(model.parameters(), cfg.training.grad_clip)
         
         # 4. Optimizer step
-        optimizer.step()
-        optimizer.zero_grad()
+        for opt in optimizers:
+            opt.step()
+            opt.zero_grad()
         
         # Sync losses across processes
         loss_scalar = accelerator.gather(total_loss).mean().item()
@@ -187,7 +240,7 @@ def train_loop(
             log_payload = {
                 "step": step,
                 "train/loss": loss_scalar,
-                "train/lr": base_lr * lr_mult,
+                "train/lr": optimizers[0].param_groups[0]["lr"],
                 "train/tokens_per_sec": tokens_per_sec,
             }
             logger.info(
