@@ -52,7 +52,11 @@ class Muon(torch.optim.Optimizer):
             group["initial_lr"] = group["lr"]
 
     @torch.no_grad()
-    def step(self) -> None:
+    def step(self, closure=None) -> None:
+        if closure is not None:
+            # For compatibility with torch/accelerate wrappers
+            with torch.enable_grad():
+                closure()
         for group in self.param_groups:
             lr = group["lr"]
             momentum = group["momentum"]
