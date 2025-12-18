@@ -89,17 +89,18 @@ def create_optimizers(model: BaseModel, training_cfg) -> List[torch.optim.Optimi
     betas = training_cfg.get("adam_betas", (0.8, 0.95))
     adam_eps = training_cfg.get("adam_eps", 1e-10)
     
-    # Identify parameter groups
-    embedding_params = set()
-    if hasattr(model, "wte"):
-        embedding_params.update(model.wte.parameters())
-    if hasattr(model, "wpe"):
-        embedding_params.update(model.wpe.parameters())
-    if hasattr(model, "lm_head"):
-        embedding_params.update(model.lm_head.parameters())
-    
-    embedding_params = list(embedding_params)
-    matrix_params = [p for p in model.parameters() if p not in embedding_params]
+    # Identify parameter groups (by identity, not equality to avoid tensor broadcast)
+    embedding_params: list[torch.nn.Parameter] = []
+    for attr in ("wte", "wpe", "lm_head"):
+        if hasattr(model, attr):
+            embedding_params.extend(list(getattr(model, attr).parameters()))
+    embed_ids = {id(p) for p in embedding_params}
+
+    other_params = [p for p in model.parameters() if id(p) not in embed_ids]
+    # Muon expects 2D params; route others to AdamW
+    muon_params = [p for p in other_params if p.ndim >= 2]
+    adam_extra_params = [p for p in other_params if p.ndim < 2]
+    embedding_params.extend(adam_extra_params)
     
     # Scale lr by sqrt dimension like nanochat
     d_model = getattr(getattr(model, "config", None), "d_model", 768)
@@ -126,15 +127,18 @@ def create_optimizers(model: BaseModel, training_cfg) -> List[torch.optim.Optimi
         g["initial_lr"] = g["lr"]
     
     # Muon on matrix / rest
-    muon = Muon(
-        matrix_params,
-        lr=matrix_lr,
-        momentum=muon_momentum,
-        nesterov=True,
-        ns_steps=5,
-    )
+    optimizers: List[torch.optim.Optimizer] = [adamw]
+    if len(muon_params) > 0:
+        muon = Muon(
+            muon_params,
+            lr=matrix_lr,
+            momentum=muon_momentum,
+            nesterov=True,
+            ns_steps=5,
+        )
+        optimizers.append(muon)
     
-    return [adamw, muon]
+    return optimizers
 
 
 def calculate_grad_accum_steps(cfg: DictConfig, accelerator: Accelerator) -> int:
