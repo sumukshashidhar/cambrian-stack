@@ -3,15 +3,15 @@ device_batch_size: 8
 total_batch_size: 524288
 max_steps: 71680        # aligns with tokens:param ~20 for ~1.9B params
 learning_rate: 0.001
-embedding_lr: 0.2
-unembedding_lr: 0.004
-matrix_lr: 0.02
+embedding_lr: 0.1
+unembedding_lr: 0.02
+matrix_lr: 0.01
 muon_momentum: 0.95
 adam_betas: [0.8, 0.95]
 adam_eps: 1.0e-10
 weight_decay: 0.0
 grad_clip: 1.0
-warmup_ratio: 0.0
+warmup_ratio: 0.01
 warmdown_ratio: 0.2
 final_lr_frac: 0.0
 eval_every: 250

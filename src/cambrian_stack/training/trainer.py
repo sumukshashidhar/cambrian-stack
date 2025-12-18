@@ -6,7 +6,7 @@ Each step is a well-named function that can be understood independently.
 import math
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import torch
 from torch.optim import AdamW
@@ -76,7 +76,7 @@ def train(cfg: DictConfig) -> None:
 
 def setup_accelerator() -> Accelerator:
     """Initialize accelerator for distributed training."""
-    return Accelerator()
+    return Accelerator(mixed_precision="bf16")
 
 
 def create_optimizers(model: BaseModel, training_cfg) -> List[torch.optim.Optimizer]:
@@ -147,8 +147,13 @@ def calculate_grad_accum_steps(cfg: DictConfig, accelerator: Accelerator) -> int
     tokens_per_step = tokens_per_micro * max(1, accelerator.num_processes)
     if tokens_per_step == 0:
         raise ValueError("tokens_per_step computed as zero")
-    grad_accum = math.ceil(cfg.training.total_batch_size / tokens_per_step)
-    return max(1, grad_accum)
+    grad_accum = max(1, cfg.training.total_batch_size // tokens_per_step)
+    if grad_accum * tokens_per_step != cfg.training.total_batch_size and accelerator.is_main_process:
+        logger.warning(
+            f"total_batch_size={cfg.training.total_batch_size} not divisible by tokens_per_step={tokens_per_step}; "
+            f"using grad_accum={grad_accum} (effective tokens/step={grad_accum * tokens_per_step})"
+        )
+    return grad_accum
 
 
 # =============================================================================
@@ -241,15 +246,19 @@ def train_loop(
         
         # 5. Log metrics
         if accelerator.is_main_process and (step % cfg.logging.log_every == 0 or step == 0):
+            adam_lr = next((pg["lr"] for opt in optimizers for pg in opt.param_groups if "beta" in str(pg)), optimizers[0].param_groups[0]["lr"])
+            muon_lr = next((pg["lr"] for opt in optimizers if isinstance(opt, Muon) for pg in opt.param_groups), None)
             log_payload = {
                 "step": step,
                 "train/loss": loss_scalar,
-                "train/lr": optimizers[0].param_groups[0]["lr"],
+                "train/lr_adam": adam_lr,
+                "train/lr_muon": muon_lr if muon_lr is not None else adam_lr,
                 "train/tokens_per_sec": tokens_per_sec,
             }
             logger.info(
-                f"step {step:05d} | loss {loss_scalar:.4f} | lr {base_lr * lr_mult:.2e} | "
-                f"tok/s {tokens_per_sec:,.0f}"
+                f"step {step:05d} | loss {loss_scalar:.4f} | lr_adam {adam_lr:.2e}"
+                + (f" | lr_muon {muon_lr:.2e}" if muon_lr is not None else "")
+                + f" | tok/s {tokens_per_sec:,.0f}"
             )
             wandb_run.log(log_payload)
         
