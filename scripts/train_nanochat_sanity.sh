@@ -3,7 +3,7 @@
 # - Model: depth=16, d_model=1024, vocab=65536, seq=2048
 # - Batch: auto-tuned device_batch_size (target 70% VRAM) → grad_accum computed
 # - Total batch size fixed at 524288 tokens (nanochat-style)
-# - Steps: 8000 (~4.2B tokens, ~20× params for ~200M param model)
+# - Steps: 8000 (override target_param_ratio for a short sanity run)
 # Usage: ./scripts/train_nanochat_sanity.sh [extra hydra overrides]
 
 set -e
@@ -19,12 +19,11 @@ export MAIN_PROCESS_PORT=${MAIN_PROCESS_PORT:-29500}
 
 mkdir -p logs out
 
-DBS=$(python scripts/find_batch_size.py --seq-len 2048 --depth 16 --vocab-size 65536 --target-frac 0.7 --max-try 12 | tail -n1 | awk '{print $NF}')
+DBS=$(python scripts/find_batch_size.py --seq-len 2048 --depth 16 --vocab-size 65536 --target-frac 0.7 --max-try 12 --model-type nanochat_gpt | tail -n1 | awk '{print $NF}')
 [ -z "$DBS" ] && DBS=4
 
 accelerate launch --multi_gpu --num_processes=4 --main_process_port=${MAIN_PROCESS_PORT} \
-  src/cambrian_stack/train.py \
-  --config-name=baseline_fineweb \
+  -m cambrian_stack.speedrun \
   model.depth=16 \
   model.max_seq_len=2048 \
   model.vocab_size=65536 \

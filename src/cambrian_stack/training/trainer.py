@@ -38,8 +38,13 @@ def train(cfg: DictConfig) -> None:
     # Chapter 2: Create experiment + components
     exp_cfg = cfg.experiment if "experiment" in cfg else {"type": "autoregressive"}
     experiment = create_experiment(exp_cfg)
-    model = experiment.build_model(cfg.model)
     train_loader, val_loader, tokenizer = experiment.build_dataloaders(cfg, accelerator=accelerator)
+    if hasattr(tokenizer, "vocab_size") and cfg.model.vocab_size != tokenizer.vocab_size:
+        raise ValueError(
+            f"Tokenizer vocab_size={tokenizer.vocab_size} does not match model.vocab_size={cfg.model.vocab_size}. "
+            "Set model.vocab_size to match the tokenizer or use a tokenizer with the desired vocab size."
+        )
+    model = experiment.build_model(cfg.model)
     optimizers = create_optimizers(model, cfg.training)
     
     # Chapter 3: Prepare for distributed training
@@ -90,17 +95,45 @@ def create_optimizers(model: BaseModel, training_cfg) -> List[torch.optim.Optimi
     adam_eps = training_cfg.get("adam_eps", 1e-10)
     
     # Identify parameter groups (by identity, not equality to avoid tensor broadcast)
+    def _dedupe(params: list[torch.nn.Parameter]) -> list[torch.nn.Parameter]:
+        seen: set[int] = set()
+        out: list[torch.nn.Parameter] = []
+        for p in params:
+            pid = id(p)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            out.append(p)
+        return out
+
     embedding_params: list[torch.nn.Parameter] = []
-    for attr in ("wte", "wpe", "lm_head"):
+    for attr in ("wte", "wpe", "token_emb", "time_emb", "pos_emb"):
         if hasattr(model, attr):
             embedding_params.extend(list(getattr(model, attr).parameters()))
-    embed_ids = {id(p) for p in embedding_params}
+    embedding_params = _dedupe(embedding_params)
 
-    other_params = [p for p in model.parameters() if id(p) not in embed_ids]
+    unembedding_params: list[torch.nn.Parameter] = []
+    for attr in ("lm_head", "output_head"):
+        if hasattr(model, attr):
+            unembedding_params.extend(list(getattr(model, attr).parameters()))
+    unembedding_params = _dedupe(unembedding_params)
+
+    embed_ids = {id(p) for p in embedding_params}
+    unembed_ids = {id(p) for p in unembedding_params}
+    overlap = embed_ids & unembed_ids
+    if overlap:
+        logger.warning(
+            "Found tied embedding/lm_head params; using embedding LR for shared params and removing duplicates."
+        )
+        unembedding_params = [p for p in unembedding_params if id(p) not in overlap]
+        unembed_ids = {id(p) for p in unembedding_params}
+
+    other_params = [p for p in model.parameters() if id(p) not in embed_ids | unembed_ids]
     # Muon expects 2D params; route others to AdamW
     muon_params = [p for p in other_params if p.ndim >= 2]
     adam_extra_params = [p for p in other_params if p.ndim < 2]
-    embedding_params.extend(adam_extra_params)
+    if adam_extra_params:
+        embedding_params.extend(adam_extra_params)
     
     # Scale lr by sqrt dimension like nanochat
     d_model = getattr(getattr(model, "config", None), "d_model", 768)
@@ -113,10 +146,15 @@ def create_optimizers(model: BaseModel, training_cfg) -> List[torch.optim.Optimi
         fused_ok = True
     except Exception:
         fused_ok = False
+    adam_groups = []
+    if unembedding_params:
+        adam_groups.append(dict(params=unembedding_params, lr=unemb_lr * dmodel_lr_scale))
+    if embedding_params:
+        adam_groups.append(dict(params=embedding_params, lr=emb_lr * dmodel_lr_scale))
+    if not adam_groups:
+        raise ValueError("No parameters assigned to AdamW optimizer")
     adamw = AdamW(
-        [
-            dict(params=embedding_params, lr=emb_lr * dmodel_lr_scale),
-        ],
+        adam_groups,
         lr=emb_lr * dmodel_lr_scale,
         betas=betas,
         eps=adam_eps,
@@ -147,7 +185,7 @@ def calculate_grad_accum_steps(cfg: DictConfig, accelerator: Accelerator) -> int
     tokens_per_step = tokens_per_micro * max(1, accelerator.num_processes)
     if tokens_per_step == 0:
         raise ValueError("tokens_per_step computed as zero")
-    grad_accum = max(1, cfg.training.total_batch_size // tokens_per_step)
+    grad_accum = max(1, (cfg.training.total_batch_size + tokens_per_step - 1) // tokens_per_step)
     if grad_accum * tokens_per_step != cfg.training.total_batch_size and accelerator.is_main_process:
         logger.warning(
             f"total_batch_size={cfg.training.total_batch_size} not divisible by tokens_per_step={tokens_per_step}; "
@@ -172,16 +210,32 @@ def get_lr_multiplier(step: int, cfg: DictConfig) -> float:
     warmup_steps = int(cfg.training.warmup_ratio * max_steps)
     warmdown_steps = int(cfg.training.warmdown_ratio * max_steps)
     warmdown_start = max_steps - warmdown_steps
+    schedule = cfg.training.get("lr_schedule", "cosine")
     
     if warmup_steps > 0 and step < warmup_steps:
         return step / max(1, warmup_steps)
     
     if warmdown_steps > 0 and step >= warmdown_start:
         progress = (step - warmdown_start) / max(1, warmdown_steps)
+        if schedule == "linear":
+            return 1.0 - progress * (1 - cfg.training.final_lr_frac)
         cosine = 0.5 * (1 + math.cos(math.pi * progress))
         return cfg.training.final_lr_frac + cosine * (1 - cfg.training.final_lr_frac)
     
     return 1.0
+
+
+def get_muon_momentum(step: int, cfg: DictConfig) -> float | None:
+    """Optional Muon momentum warmup schedule."""
+    start = cfg.training.get("muon_momentum_start", None)
+    end = cfg.training.get("muon_momentum_end", None)
+    warmup_steps = cfg.training.get("muon_momentum_warmup_steps", None)
+    if start is None or end is None or warmup_steps is None:
+        return None
+    if warmup_steps <= 0:
+        return float(end)
+    frac = min(step / warmup_steps, 1.0)
+    return float((1 - frac) * start + frac * end)
 
 
 # =============================================================================
@@ -218,6 +272,14 @@ def train_loop(
             for param_group in opt.param_groups:
                 base_lr = param_group.get("initial_lr", param_group["lr"])
                 param_group["lr"] = base_lr * lr_mult
+
+        # 1b. Update Muon momentum schedule if configured
+        muon_mom = get_muon_momentum(step, cfg)
+        if muon_mom is not None:
+            for opt in optimizers:
+                if isinstance(opt, Muon):
+                    for param_group in opt.param_groups:
+                        param_group["momentum"] = muon_mom
         
         # 2. Accumulate gradients
         total_loss = torch.tensor(0.0, device=device)

@@ -1,6 +1,7 @@
 """Model registry - add new models here."""
 from cambrian_stack.models.base import BaseModel
 from cambrian_stack.models.transformer import Transformer, TransformerConfig
+from cambrian_stack.models.nanochat_gpt import NanochatGPT, NanochatGPTConfig
 from cambrian_stack.models.diffusion_transformer import DiffusionTransformer, DiffusionTransformerConfig
 
 # ============================================================================
@@ -9,11 +10,13 @@ from cambrian_stack.models.diffusion_transformer import DiffusionTransformer, Di
 MODEL_REGISTRY: dict[str, type[BaseModel]] = {
     "transformer": Transformer,
     "diffusion_transformer": DiffusionTransformer,
+    "nanochat_gpt": NanochatGPT,
 }
 
 CONFIG_REGISTRY: dict[str, type] = {
     "transformer": TransformerConfig,
     "diffusion_transformer": DiffusionTransformerConfig,
+    "nanochat_gpt": NanochatGPTConfig,
 }
 # ============================================================================
 
@@ -39,6 +42,7 @@ __all__ = [
     "BaseModel",
     "Transformer",
     "DiffusionTransformer",
+    "NanochatGPT",
     "create_model",
     "MODEL_REGISTRY",
 ]

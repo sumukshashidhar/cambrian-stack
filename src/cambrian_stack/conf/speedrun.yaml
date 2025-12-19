@@ -1,0 +1,21 @@
+# Minimal speedrun config (pretraining only)
+
+defaults:
+  - model: nanochat_d20
+  - data: fineweb_speedrun
+  - training: speedrun
+  - logging: default
+  - output: default
+  - _self_
+
+logging:
+  wandb_run: dummy
+
+output:
+  dir: out/speedrun
+
+# Keep hydra from changing working directory
+hydra:
+  run:
+    dir: .
+  output_subdir: null

@@ -1,8 +1,8 @@
+# FineWeb-Edu speedrun config (HF streaming)
 dataset_name: karpathy/fineweb-edu-100b-shuffle
 train_split: train
-val_split: train
+# small validation slice for quick eval
+val_split: train[:0.1%]
 tokenizer_name: gpt2
 num_workers: 4
 add_bos: true
-# Optional for diffusion experiments
-corruption_rate: 0.15

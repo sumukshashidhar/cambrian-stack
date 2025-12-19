@@ -7,7 +7,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.abspath(".."))
 
 project = "Cambrian Stack"
-author = "Cambrian Stack contributors"
+author = "Sumuk Shashidhar"
 year = datetime.utcnow().year
 copyright = f"{year}, {author}"
 

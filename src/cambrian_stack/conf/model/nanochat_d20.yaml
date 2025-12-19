@@ -1,0 +1,6 @@
+# Nanochat-inspired depth-20 model (speedrun default)
+type: nanochat_gpt
+depth: 20
+max_seq_len: 2048
+vocab_size: 50257
+dropout: 0.0

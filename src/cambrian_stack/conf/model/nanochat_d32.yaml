@@ -1,6 +1,6 @@
 # Nanochat-inspired depth-32 model (approx 1.9B params with d_model=2048)
-type: transformer
+type: nanochat_gpt
 depth: 32
 max_seq_len: 2048
-vocab_size: 65536
+vocab_size: 50257
 dropout: 0.0

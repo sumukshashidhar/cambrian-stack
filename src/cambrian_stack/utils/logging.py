@@ -52,7 +52,7 @@ def setup_wandb(cfg, is_master: bool):
         wandb.Run or DummyWandb
     """
     wandb_run = cfg.logging.wandb_run
-    if (wandb_run is None) or (not is_master):
+    if (wandb_run is None) or (str(wandb_run).lower() in {"dummy", "none", "null"}) or (not is_master):
         return DummyWandb()
     
     import wandb

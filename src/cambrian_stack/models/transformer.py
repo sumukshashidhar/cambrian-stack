@@ -120,9 +120,6 @@ class Transformer(BaseModel):
         self.ln_f = nn.LayerNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         
-        # Weight tying
-        self.lm_head.weight = self.wte.weight
-        
         self.apply(self._init_weights)
         logger.info(
             f"Initialized Transformer: depth={config.depth}, d_model={config.d_model}, "
