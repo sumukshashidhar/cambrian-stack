@@ -1,6 +1,6 @@
 dataset_name: karpathy/fineweb-edu-100b-shuffle
 train_split: train
-val_split: train[:1%]
+val_split: train
 tokenizer_name: gpt2
 num_workers: 4
 # Optional for diffusion experiments
