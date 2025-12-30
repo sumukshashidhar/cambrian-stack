@@ -6,19 +6,18 @@ Each step is a well-named function that can be understood independently.
 import math
 import time
 from pathlib import Path
+from typing import List, Optional
 
 import torch
-from torch import Tensor
 from torch.optim import AdamW
 from accelerate import Accelerator
 from loguru import logger
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
-from cambrian_stack.models import create_model, BaseModel
-from cambrian_stack.data_loaders import get_dataloaders, corrupt_tokens
 from cambrian_stack.utils.logging import setup_logging, setup_wandb
-from cambrian_stack.evaluation.metrics import evaluate_loss, generate_samples, EVAL_PROMPTS
-from omegaconf import OmegaConf
+from cambrian_stack.experiments import create_experiment
+from cambrian_stack.models import BaseModel
+from cambrian_stack.optim import Muon
 
 
 # =============================================================================
@@ -36,25 +35,34 @@ def train(cfg: DictConfig) -> None:
     setup_logging(logs_dir)
     wandb_run = setup_wandb(cfg, accelerator.is_main_process)
     
-    # Chapter 2: Create components
-    model = create_model(cfg.model)
-    train_loader, val_loader, tokenizer = get_dataloaders(cfg, accelerator=accelerator)
-    optimizer = create_optimizer(model, cfg.training)
+    # Chapter 2: Create experiment + components
+    exp_cfg = cfg.experiment if "experiment" in cfg else {"type": "autoregressive"}
+    experiment = create_experiment(exp_cfg)
+    train_loader, val_loader, tokenizer = experiment.build_dataloaders(cfg, accelerator=accelerator)
+    if hasattr(tokenizer, "vocab_size") and cfg.model.vocab_size != tokenizer.vocab_size:
+        raise ValueError(
+            f"Tokenizer vocab_size={tokenizer.vocab_size} does not match model.vocab_size={cfg.model.vocab_size}. "
+            "Set model.vocab_size to match the tokenizer or use a tokenizer with the desired vocab size."
+        )
+    model = experiment.build_model(cfg.model)
+    optimizers = create_optimizers(model, cfg.training)
     
     # Chapter 3: Prepare for distributed training
-    model, optimizer, train_loader, val_loader = accelerator.prepare(
-        model, optimizer, train_loader, val_loader
-    )
+    prepared = accelerator.prepare(model, *optimizers, train_loader, val_loader)
+    model = prepared[0]
+    optimizers = list(prepared[1 : 1 + len(optimizers)])  # type: ignore[assignment]
+    train_loader, val_loader = prepared[-2], prepared[-1]
     
     # Chapter 4: Calculate training parameters
     grad_accum_steps = calculate_grad_accum_steps(cfg, accelerator)
     
     # Chapter 5: Training loop
     train_loop(
+        experiment=experiment,
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        optimizer=optimizer,
+        optimizers=optimizers,
         tokenizer=tokenizer,
         cfg=cfg,
         accelerator=accelerator,
@@ -73,92 +81,102 @@ def train(cfg: DictConfig) -> None:
 
 def setup_accelerator() -> Accelerator:
     """Initialize accelerator for distributed training."""
-    return Accelerator()
+    return Accelerator(mixed_precision="bf16")
 
 
-# =============================================================================
-# DIFFUSION HELPERS
-# =============================================================================
-
-def is_diffusion_model(model: BaseModel) -> bool:
-    """Check whether model is a diffusion transformer."""
-    if hasattr(model, "config") and hasattr(model.config, "diffusion_steps"):
-        return True
-    if hasattr(model, "module"):
-        mod = model.module
-        return hasattr(mod, "config") and hasattr(mod.config, "diffusion_steps")
-    return False
-
-
-def diffusion_train_step(model, batch, cfg, device, accelerator, grad_accum_steps: int) -> torch.Tensor:
-    """Single micro-step for diffusion training."""
-    base_model = accelerator.unwrap_model(model)
-    tokens = batch["input_ids"].to(device)
-    corruption_rate = getattr(cfg.data, "corruption_rate", 0.15)
+def create_optimizers(model: BaseModel, training_cfg) -> List[torch.optim.Optimizer]:
+    """Create Muon (matrix params) + AdamW (embedding/positional) optimizers."""
+    # Learning rates (fallback to single lr if not provided)
+    emb_lr = training_cfg.get("embedding_lr", training_cfg.learning_rate)
+    unemb_lr = training_cfg.get("unembedding_lr", training_cfg.learning_rate)
+    matrix_lr = training_cfg.get("matrix_lr", training_cfg.learning_rate)
+    muon_momentum = training_cfg.get("muon_momentum", 0.95)
+    betas = training_cfg.get("adam_betas", (0.8, 0.95))
+    adam_eps = training_cfg.get("adam_eps", 1e-10)
     
-    corrupted, targets, timesteps = corrupt_tokens(
-        tokens,
-        mask_token_id=base_model.config.mask_token_id,
-        corruption_rate=corruption_rate,
-        diffusion_steps=base_model.config.diffusion_steps,
-    )
-    
-    logits, loss = model(corrupted, timesteps, targets)
-    loss = loss / grad_accum_steps
-    accelerator.backward(loss)
-    return loss
+    # Identify parameter groups (by identity, not equality to avoid tensor broadcast)
+    def _dedupe(params: list[torch.nn.Parameter]) -> list[torch.nn.Parameter]:
+        seen: set[int] = set()
+        out: list[torch.nn.Parameter] = []
+        for p in params:
+            pid = id(p)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            out.append(p)
+        return out
 
+    embedding_params: list[torch.nn.Parameter] = []
+    for attr in ("wte", "wpe", "token_emb", "time_emb", "pos_emb"):
+        if hasattr(model, attr):
+            embedding_params.extend(list(getattr(model, attr).parameters()))
+    embedding_params = _dedupe(embedding_params)
 
-def diffusion_eval_step(model, val_loader, cfg, device, accelerator) -> dict[str, float]:
-    """Evaluate diffusion model on masked recovery."""
-    base_model = accelerator.unwrap_model(model)
-    model_was_training = model.training
-    model.eval()
-    total_loss = 0.0
-    total_masked_acc = 0.0
-    batches = 0
-    
-    with torch.no_grad():
-        for batches, batch in enumerate(val_loader, start=1):
-            if batches > cfg.training.eval_batches:
-                batches -= 1
-                break
-            tokens = batch["input_ids"].to(device)
-            corruption_rate = getattr(cfg.data, "corruption_rate", 0.15)
-            corrupted, targets, timesteps = corrupt_tokens(
-                tokens,
-                mask_token_id=base_model.config.mask_token_id,
-                corruption_rate=corruption_rate,
-                diffusion_steps=base_model.config.diffusion_steps,
-            )
-            logits, loss = model(corrupted, timesteps, targets)
-            total_loss += loss.item()
-            
-            preds = logits.argmax(dim=-1)
-            mask = corrupted.eq(model.config.mask_token_id)
-            masked_acc = ((preds == targets) & mask).float().sum() / mask.sum().clamp(min=1)
-            total_masked_acc += masked_acc.item()
-    
-    avg_loss = total_loss / max(batches, 1)
-    avg_masked_acc = total_masked_acc / max(batches, 1)
-    
-    if model_was_training:
-        model.train()
-    
-    return {
-        "val_loss": avg_loss,
-        "val_masked_accuracy": avg_masked_acc,
-    }
+    unembedding_params: list[torch.nn.Parameter] = []
+    for attr in ("lm_head", "output_head"):
+        if hasattr(model, attr):
+            unembedding_params.extend(list(getattr(model, attr).parameters()))
+    unembedding_params = _dedupe(unembedding_params)
 
+    embed_ids = {id(p) for p in embedding_params}
+    unembed_ids = {id(p) for p in unembedding_params}
+    overlap = embed_ids & unembed_ids
+    if overlap:
+        logger.warning(
+            "Found tied embedding/lm_head params; using embedding LR for shared params and removing duplicates."
+        )
+        unembedding_params = [p for p in unembedding_params if id(p) not in overlap]
+        unembed_ids = {id(p) for p in unembedding_params}
 
-def create_optimizer(model: BaseModel, training_cfg) -> AdamW:
-    """Create AdamW optimizer."""
-    return AdamW(
-        model.parameters(),
-        lr=training_cfg.learning_rate,
+    other_params = [p for p in model.parameters() if id(p) not in embed_ids | unembed_ids]
+    # Muon expects 2D params; route others to AdamW
+    muon_params = [p for p in other_params if p.ndim >= 2]
+    adam_extra_params = [p for p in other_params if p.ndim < 2]
+    if adam_extra_params:
+        embedding_params.extend(adam_extra_params)
+    
+    # Scale lr by sqrt dimension like nanochat
+    d_model = getattr(getattr(model, "config", None), "d_model", 768)
+    dmodel_lr_scale = (d_model / 768) ** -0.5
+    
+    # AdamW on embeddings (and tied lm_head if applicable)
+    fused_ok = False
+    try:
+        AdamW(embedding_params, lr=1e-3, fused=True)
+        fused_ok = True
+    except Exception:
+        fused_ok = False
+    adam_groups = []
+    if unembedding_params:
+        adam_groups.append(dict(params=unembedding_params, lr=unemb_lr * dmodel_lr_scale))
+    if embedding_params:
+        adam_groups.append(dict(params=embedding_params, lr=emb_lr * dmodel_lr_scale))
+    if not adam_groups:
+        raise ValueError("No parameters assigned to AdamW optimizer")
+    adamw = AdamW(
+        adam_groups,
+        lr=emb_lr * dmodel_lr_scale,
+        betas=betas,
+        eps=adam_eps,
         weight_decay=training_cfg.weight_decay,
-        betas=(0.9, 0.95),
+        fused=fused_ok,
     )
+    for g in adamw.param_groups:
+        g["initial_lr"] = g["lr"]
+    
+    # Muon on matrix / rest
+    optimizers: List[torch.optim.Optimizer] = [adamw]
+    if len(muon_params) > 0:
+        muon = Muon(
+            muon_params,
+            lr=matrix_lr,
+            momentum=muon_momentum,
+            nesterov=True,
+            ns_steps=5,
+        )
+        optimizers.append(muon)
+    
+    return optimizers
 
 
 def calculate_grad_accum_steps(cfg: DictConfig, accelerator: Accelerator) -> int:
@@ -167,8 +185,13 @@ def calculate_grad_accum_steps(cfg: DictConfig, accelerator: Accelerator) -> int
     tokens_per_step = tokens_per_micro * max(1, accelerator.num_processes)
     if tokens_per_step == 0:
         raise ValueError("tokens_per_step computed as zero")
-    grad_accum = math.ceil(cfg.training.total_batch_size / tokens_per_step)
-    return max(1, grad_accum)
+    grad_accum = max(1, (cfg.training.total_batch_size + tokens_per_step - 1) // tokens_per_step)
+    if grad_accum * tokens_per_step != cfg.training.total_batch_size and accelerator.is_main_process:
+        logger.warning(
+            f"total_batch_size={cfg.training.total_batch_size} not divisible by tokens_per_step={tokens_per_step}; "
+            f"using grad_accum={grad_accum} (effective tokens/step={grad_accum * tokens_per_step})"
+        )
+    return grad_accum
 
 
 # =============================================================================
@@ -187,16 +210,32 @@ def get_lr_multiplier(step: int, cfg: DictConfig) -> float:
     warmup_steps = int(cfg.training.warmup_ratio * max_steps)
     warmdown_steps = int(cfg.training.warmdown_ratio * max_steps)
     warmdown_start = max_steps - warmdown_steps
+    schedule = cfg.training.get("lr_schedule", "cosine")
     
     if warmup_steps > 0 and step < warmup_steps:
         return step / max(1, warmup_steps)
     
     if warmdown_steps > 0 and step >= warmdown_start:
         progress = (step - warmdown_start) / max(1, warmdown_steps)
+        if schedule == "linear":
+            return 1.0 - progress * (1 - cfg.training.final_lr_frac)
         cosine = 0.5 * (1 + math.cos(math.pi * progress))
         return cfg.training.final_lr_frac + cosine * (1 - cfg.training.final_lr_frac)
     
     return 1.0
+
+
+def get_muon_momentum(step: int, cfg: DictConfig) -> float | None:
+    """Optional Muon momentum warmup schedule."""
+    start = cfg.training.get("muon_momentum_start", None)
+    end = cfg.training.get("muon_momentum_end", None)
+    warmup_steps = cfg.training.get("muon_momentum_warmup_steps", None)
+    if start is None or end is None or warmup_steps is None:
+        return None
+    if warmup_steps <= 0:
+        return float(end)
+    frac = min(step / warmup_steps, 1.0)
+    return float((1 - frac) * start + frac * end)
 
 
 # =============================================================================
@@ -204,10 +243,11 @@ def get_lr_multiplier(step: int, cfg: DictConfig) -> float:
 # =============================================================================
 
 def train_loop(
-    model: BaseModel,
+    experiment,
+    model,
     train_loader,
     val_loader,
-    optimizer: AdamW,
+    optimizers: List[torch.optim.Optimizer],
     tokenizer,
     cfg: DictConfig,
     accelerator: Accelerator,
@@ -221,16 +261,25 @@ def train_loop(
     tokens_per_step = (
         cfg.training.device_batch_size * cfg.model.max_seq_len * max(1, accelerator.num_processes) * grad_accum_steps
     )
-    is_diffusion = is_diffusion_model(model)
+    can_sample = experiment.supports_sampling()
     
     for step in range(cfg.training.max_steps):
         step_start = time.perf_counter()
         
         # 1. Update learning rate
         lr_mult = get_lr_multiplier(step, cfg)
-        base_lr = cfg.training.learning_rate
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = base_lr * lr_mult
+        for opt in optimizers:
+            for param_group in opt.param_groups:
+                base_lr = param_group.get("initial_lr", param_group["lr"])
+                param_group["lr"] = base_lr * lr_mult
+
+        # 1b. Update Muon momentum schedule if configured
+        muon_mom = get_muon_momentum(step, cfg)
+        if muon_mom is not None:
+            for opt in optimizers:
+                if isinstance(opt, Muon):
+                    for param_group in opt.param_groups:
+                        param_group["momentum"] = muon_mom
         
         # 2. Accumulate gradients
         total_loss = torch.tensor(0.0, device=device)
@@ -241,22 +290,16 @@ def train_loop(
                 train_iter = iter(train_loader)
                 batch = next(train_iter)
             
-            if is_diffusion:
-                loss = diffusion_train_step(model, batch, cfg, device, accelerator, grad_accum_steps)
-            else:
-                x = batch["input_ids"].to(device)
-                y = batch["labels"].to(device)
-                _, loss = model(x, y)
-                loss = loss / grad_accum_steps
-                accelerator.backward(loss)
+            loss = experiment.training_step(model, batch, cfg, accelerator, grad_accum_steps)
             total_loss += loss.detach()
         
         # 3. Clip gradients
         accelerator.clip_grad_norm_(model.parameters(), cfg.training.grad_clip)
         
         # 4. Optimizer step
-        optimizer.step()
-        optimizer.zero_grad()
+        for opt in optimizers:
+            opt.step()
+            opt.zero_grad()
         
         # Sync losses across processes
         loss_scalar = accelerator.gather(total_loss).mean().item()
@@ -265,52 +308,54 @@ def train_loop(
         
         # 5. Log metrics
         if accelerator.is_main_process and (step % cfg.logging.log_every == 0 or step == 0):
+            adam_lr = next((pg["lr"] for opt in optimizers for pg in opt.param_groups if "beta" in str(pg)), optimizers[0].param_groups[0]["lr"])
+            muon_lr = next((pg["lr"] for opt in optimizers if isinstance(opt, Muon) for pg in opt.param_groups), None)
             log_payload = {
                 "step": step,
                 "train/loss": loss_scalar,
-                "train/lr": base_lr * lr_mult,
+                "train/lr_adam": adam_lr,
+                "train/lr_muon": muon_lr if muon_lr is not None else adam_lr,
                 "train/tokens_per_sec": tokens_per_sec,
             }
             logger.info(
-                f"step {step:05d} | loss {loss_scalar:.4f} | lr {base_lr * lr_mult:.2e} | "
-                f"tok/s {tokens_per_sec:,.0f}"
+                f"step {step:05d} | loss {loss_scalar:.4f} | lr_adam {adam_lr:.2e}"
+                + (f" | lr_muon {muon_lr:.2e}" if muon_lr is not None else "")
+                + f" | tok/s {tokens_per_sec:,.0f}"
             )
             wandb_run.log(log_payload)
         
         # 6. Evaluate
         if cfg.training.eval_every > 0 and (step + 1) % cfg.training.eval_every == 0:
-            if is_diffusion:
-                val_metrics = diffusion_eval_step(model, val_loader, cfg, device, accelerator)
-                if accelerator.is_main_process:
-                    logger.info(
-                        f"[eval] step {step:05d} | val_loss {val_metrics['val_loss']:.4f} "
-                        f"| val_masked_acc {val_metrics['val_masked_accuracy']:.3f}"
-                    )
-                    wandb_run.log({"step": step, **val_metrics})
-            else:
-                val_loss, val_ppl = evaluate_loss(model, val_loader, cfg.training.eval_batches, device, accelerator)
-                if accelerator.is_main_process:
-                    logger.info(f"[eval] step {step:05d} | val_loss {val_loss:.4f} | val_ppl {val_ppl:.2f}")
-                    wandb_run.log({"step": step, "val/loss": val_loss, "val/perplexity": val_ppl})
+            val_metrics = experiment.evaluate(model, val_loader, cfg, device, accelerator)
+            if accelerator.is_main_process:
+                formatted = " | ".join(f"{k} {v:.4f}" for k, v in val_metrics.items())
+                logger.info(f"[eval] step {step:05d} | {formatted}")
+                wandb_run.log({"step": step, **val_metrics})
         
         # 7. Generate samples
         if (
-            accelerator.is_main_process
+            can_sample
+            and accelerator.is_main_process
             and cfg.training.sample_every > 0
             and (step + 1) % cfg.training.sample_every == 0
         ):
-            if not is_diffusion:
-                samples = generate_samples(model, tokenizer, EVAL_PROMPTS, device=device)
-                for prompt, sample in zip(EVAL_PROMPTS, samples):
+            base_model = accelerator.unwrap_model(model)
+            samples = experiment.sample(base_model, tokenizer, cfg, device=device)  # type: ignore[attr-defined]
+            prompts = getattr(cfg.training, "sample_prompts", None)
+            if prompts:
+                for prompt, sample in zip(prompts, samples):
                     logger.info(f"\n{'='*20} Prompt: {prompt}\n{sample}\n")
-                wandb_run.log({f"samples/{i}": s for i, s in enumerate(samples)})
+            else:
+                for i, sample in enumerate(samples):
+                    logger.info(f"\n{'='*20} Sample {i}\n{sample}\n")
+            wandb_run.log({f"samples/{i}": s for i, s in enumerate(samples)})
         
         # 8. Save checkpoint
         if cfg.training.save_every > 0 and (step + 1) % cfg.training.save_every == 0:
-            save_checkpoint(model, optimizer, step + 1, cfg, accelerator)
+            save_checkpoint(model, optimizers, step + 1, cfg, accelerator)
 
     # Final checkpoint
-    save_checkpoint(model, optimizer, cfg.training.max_steps, cfg, accelerator)
+    save_checkpoint(model, optimizers, cfg.training.max_steps, cfg, accelerator)
 
 
 # =============================================================================
@@ -319,7 +364,7 @@ def train_loop(
 
 def save_checkpoint(
     model: BaseModel,
-    optimizer: AdamW,
+    optimizers: List[torch.optim.Optimizer],
     step: int,
     cfg: DictConfig,
     accelerator: Accelerator,
@@ -335,7 +380,7 @@ def save_checkpoint(
             "step": step,
             "config": OmegaConf.to_container(cfg, resolve=True),
             "model_state_dict": unwrapped.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
+            "optimizers_state_dict": [opt.state_dict() for opt in optimizers],
         }
         accelerator.save(state, checkpoint_path)
         logger.info(f"Saved checkpoint to {checkpoint_path}")
@@ -343,10 +388,11 @@ def save_checkpoint(
     accelerator.wait_for_everyone()
 
 
-def load_checkpoint(path: Path, model: BaseModel, optimizer: AdamW | None = None) -> int:
+def load_checkpoint(path: Path, model: BaseModel, optimizers: List[torch.optim.Optimizer] | None = None) -> int:
     """Load model checkpoint. Returns the step number."""
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
-    if optimizer is not None and "optimizer_state_dict" in checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if optimizers is not None and "optimizers_state_dict" in checkpoint:
+        for opt, sd in zip(optimizers, checkpoint["optimizers_state_dict"]):
+            opt.load_state_dict(sd)
     return int(checkpoint.get("step", 0))

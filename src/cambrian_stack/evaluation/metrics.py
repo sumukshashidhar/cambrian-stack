@@ -93,7 +93,11 @@ def generate_samples(
     
     samples: list[str] = []
     for prompt in prompts:
-        tokens = tokenizer.encode(prompt, return_tensors="pt").to(device)
+        if hasattr(tokenizer, "__call__"):
+            tokens = tokenizer(prompt, return_tensors="pt")["input_ids"].to(device)
+        else:
+            ids = tokenizer.encode(prompt)
+            tokens = torch.tensor([ids], dtype=torch.long, device=device)
         generated = model.generate(tokens, max_new_tokens=max_tokens, temperature=temperature)
         text = tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
         samples.append(text)

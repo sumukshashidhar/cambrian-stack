@@ -1,0 +1,8 @@
+dataset_name: roneneldan/TinyStories
+train_split: train
+val_split: validation
+tokenizer_name: gpt2
+num_workers: 4
+add_bos: false
+# Optional for diffusion experiments
+corruption_rate: 0.15

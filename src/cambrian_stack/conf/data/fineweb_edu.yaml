@@ -1,0 +1,8 @@
+dataset_name: karpathy/fineweb-edu-100b-shuffle
+train_split: train
+val_split: train
+tokenizer_name: gpt2
+num_workers: 4
+add_bos: true
+# Optional for diffusion experiments
+corruption_rate: 0.15

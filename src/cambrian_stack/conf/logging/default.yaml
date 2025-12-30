@@ -1,0 +1,3 @@
+wandb_project: ${oc.env:WANDB_PROJECT,cambrian-stack}
+wandb_run: null
+log_every: 10

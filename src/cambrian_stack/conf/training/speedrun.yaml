@@ -1,0 +1,35 @@
+# Nanochat-like speedrun training hyperparameters
+# LRs from nanochat base_train.py defaults
+# Steps can be computed from target_param_ratio (if max_steps <= 0)
+
+device_batch_size: 4
+# total_batch_size is in tokens (B * T * grad_accum * world_size)
+total_batch_size: 524288
+max_steps: -1
+# target tokens : params ratio (Chinchilla ~20)
+target_param_ratio: 20
+
+learning_rate: 0.001
+embedding_lr: 0.2
+unembedding_lr: 0.004
+matrix_lr: 0.02
+muon_momentum: 0.95
+muon_momentum_start: 0.85
+muon_momentum_end: 0.95
+muon_momentum_warmup_steps: 300
+adam_betas: [0.8, 0.95]
+adam_eps: 1.0e-10
+weight_decay: 0.0
+
+grad_clip: 1.0
+warmup_ratio: 0.0
+warmdown_ratio: 0.2
+final_lr_frac: 0.0
+lr_schedule: linear
+
+eval_every: 250
+eval_batches: 20
+sample_every: 0
+sample_tokens: 50
+save_every: 0
+log_every: 10

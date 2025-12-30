@@ -1,5 +1,6 @@
 #!/bin/bash
 # Simple all-GPU transformer training launcher.
+# Hydra configs now live under src/cambrian_stack/conf/.
 # Usage: ./scripts/train_transformer_all.sh [hydra overrides]
 
 set -e

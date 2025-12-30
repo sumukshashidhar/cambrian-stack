@@ -14,7 +14,7 @@ load_dotenv()
 from cambrian_stack.training import train
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="baseline_transformer")
+@hydra.main(version_base=None, config_path="conf", config_name="baseline_transformer")
 def main(cfg: DictConfig) -> None:
     """Entry point for training."""
     train(cfg)
@@ -22,4 +22,3 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
-

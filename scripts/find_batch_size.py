@@ -7,7 +7,7 @@ fraction of total memory on a single GPU. Use this to pick per-GPU
 microbatch for multi-GPU training (total_batch_size is set separately).
 
 Usage:
-  python scripts/find_batch_size.py --seq-len 256 --depth 12 --target-frac 0.7
+  python scripts/find_batch_size.py --seq-len 256 --depth 12 --target-frac 0.7 --model-type nanochat_gpt
 """
 from __future__ import annotations
 
@@ -17,11 +17,15 @@ import torch
 from loguru import logger
 
 from cambrian_stack.models.transformer import Transformer, TransformerConfig
+from cambrian_stack.models.nanochat_gpt import NanochatGPT, NanochatGPTConfig
 
 
-def try_batch(batch_size: int, cfg, device) -> tuple[bool, float]:
+def try_batch(batch_size: int, cfg, model_type: str, device) -> tuple[bool, float]:
     torch.cuda.reset_peak_memory_stats(device)
-    model = Transformer(cfg).to(device)
+    if model_type == "nanochat_gpt":
+        model = NanochatGPT(cfg).to(device)
+    else:
+        model = Transformer(cfg).to(device)
     x = torch.randint(0, cfg.vocab_size, (batch_size, cfg.max_seq_len), device=device)
     y = torch.randint(0, cfg.vocab_size, (batch_size, cfg.max_seq_len), device=device)
     try:
@@ -41,6 +45,13 @@ def main():
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--depth", type=int, default=12)
     parser.add_argument("--vocab-size", type=int, default=50257)
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="nanochat_gpt",
+        choices=["nanochat_gpt", "transformer"],
+        help="Model type to probe for memory.",
+    )
     parser.add_argument("--target-frac", type=float, default=0.7, help="target fraction of total VRAM to stay under")
     parser.add_argument("--max-try", type=int, default=128, help="max batch size to probe")
     args = parser.parse_args()
@@ -51,18 +62,26 @@ def main():
     total_mem = torch.cuda.get_device_properties(device).total_memory
     target_bytes = total_mem * args.target_frac
 
-    cfg = TransformerConfig(
-        depth=args.depth,
-        max_seq_len=args.seq_len,
-        vocab_size=args.vocab_size,
-        dropout=0.0,
-    )
+    if args.model_type == "nanochat_gpt":
+        cfg = NanochatGPTConfig(
+            depth=args.depth,
+            max_seq_len=args.seq_len,
+            vocab_size=args.vocab_size,
+            dropout=0.0,
+        )
+    else:
+        cfg = TransformerConfig(
+            depth=args.depth,
+            max_seq_len=args.seq_len,
+            vocab_size=args.vocab_size,
+            dropout=0.0,
+        )
 
     best = 0
     lo, hi = 1, args.max_try
     while lo <= hi:
         mid = (lo + hi) // 2
-        ok, peak = try_batch(mid, cfg, device)
+        ok, peak = try_batch(mid, cfg, args.model_type, device)
         if ok and peak <= target_bytes:
             best = mid
             lo = mid + 1
@@ -81,4 +100,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

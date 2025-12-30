@@ -1,0 +1,16 @@
+# Baseline autoregressive transformer on FineWeb-Edu
+
+defaults:
+  - experiment: autoregressive
+  - model: nanochat_d32
+  - data: fineweb_edu
+  - training: nanochat_depth32
+  - logging: default
+  - output: default
+  - _self_
+
+logging:
+  wandb_run: baseline-fineweb
+
+output:
+  dir: out/baseline-fineweb
