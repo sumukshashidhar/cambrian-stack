@@ -5,7 +5,7 @@
 
 set -e
 
-# cd /home/sumukshashidhar/workdir/cambrian-stack
+
 source .venv/bin/activate
 
 # Load environment variables (HF_TOKEN, WANDB_PROJECT, WANDB_API_KEY)
@@ -28,6 +28,6 @@ mkdir -p logs out
 
 # Train with accelerate (multi-GPU)
 echo "Starting training..."
-accelerate launch --multi_gpu --num_processes=4 --main_process_port=${MAIN_PROCESS_PORT} \
+.venv/bin/accelerate launch --multi_gpu --num_processes=4 --main_process_port=${MAIN_PROCESS_PORT} \
     src/cambrian_stack/train.py \
     "$@"

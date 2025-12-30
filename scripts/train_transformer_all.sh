@@ -4,7 +4,6 @@
 # Usage: ./scripts/train_transformer_all.sh [hydra overrides]
 
 set -e
-# cd /home/sumukshashidhar/workdir/cambrian-stack
 source .venv/bin/activate
 
 if [ -f .env ]; then
@@ -18,6 +17,6 @@ echo "✓ Using GPUs: $CUDA_VISIBLE_DEVICES"
 
 mkdir -p logs out
 
-accelerate launch --multi_gpu --num_processes=4 --main_process_port=${MAIN_PROCESS_PORT} \
+.venv/bin/accelerate launch --multi_gpu --num_processes=4 --main_process_port=${MAIN_PROCESS_PORT} \
     src/cambrian_stack/train.py \
     "$@"
