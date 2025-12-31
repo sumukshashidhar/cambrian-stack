@@ -4,16 +4,21 @@
 
 set -e
 
-# cd /home/sumukshashidhar/workdir/cambrian-stack
-source .venv/bin/activate
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+cd "$REPO_DIR"
+
+if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+fi
 
 # Load environment variables
 if [ -f .env ]; then
     set -a && source .env && set +a
 fi
 
-# Use first GPU for eval
-export CUDA_VISIBLE_DEVICES=0
+# Use first GPU for eval unless user already set CUDA_VISIBLE_DEVICES
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
 if [ -z "$1" ]; then
     echo "Usage: ./scripts/eval_checkpoint.sh <checkpoint_path>"
@@ -21,4 +26,3 @@ if [ -z "$1" ]; then
 fi
 
 python -m cambrian_stack.eval_checkpoint --checkpoint "$1"
-

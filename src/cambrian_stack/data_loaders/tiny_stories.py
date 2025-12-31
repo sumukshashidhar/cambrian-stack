@@ -44,7 +44,7 @@ class TokenizedDataset(IterableDataset):
     def __iter__(self) -> Iterator[dict[str, Tensor]]:
         base_split = self.split
         limit = None
-        match = re.match(r"^([^\\[]+)\\[:([^\\]]+)\\]$", self.split)
+        match = re.match(r"^([^\[]+)\[:([^\]]+)\]$", self.split)
         if match:
             base_split = match.group(1)
             slice_str = match.group(2).strip()
