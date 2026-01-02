@@ -6,7 +6,7 @@ Key differences vs autoregressive Transformer:
 - Parallel denoising sampling instead of left-to-right
 """
 from dataclasses import dataclass
-from typing import Tuple
+
 
 import torch
 import torch.nn as nn
@@ -156,7 +156,7 @@ class DiffusionTransformer(BaseModel):
         x_t: Tensor,
         timesteps: Tensor,
         targets: Tensor | None = None,
-    ) -> Tensor | Tuple[Tensor, Tensor]:
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """Forward diffusion denoising step."""
         batch, seq_len = x_t.shape
         if seq_len > self.max_seq_len:
