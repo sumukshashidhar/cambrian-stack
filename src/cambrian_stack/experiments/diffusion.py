@@ -76,3 +76,14 @@ class DiffusionExperiment(Experiment):
             "val_masked_accuracy": avg_masked_acc,
         }
 
+    @torch.no_grad()
+    def sample(self, base_model, tokenizer, cfg: DictConfig, device):
+        sample_tokens = getattr(cfg.training, "sample_tokens", 64)
+        sample_temperature = cfg.training.get("sample_temperature", 0.8) if hasattr(cfg, "training") else 0.8
+        samples = base_model.sample(
+            batch_size=4,
+            seq_len=sample_tokens,
+            device=device,
+            temperature=sample_temperature,
+        )
+        return [tokenizer.decode(s, skip_special_tokens=True) for s in samples]
