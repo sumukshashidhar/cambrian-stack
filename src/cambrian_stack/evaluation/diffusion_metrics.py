@@ -1,4 +1,5 @@
 """Evaluation metrics for diffusion models."""
+from typing import Any
 import time
 import torch
 import torch.nn.functional as F
@@ -60,7 +61,7 @@ def evaluate_generation_quality(
     num_samples: int = 8,
     seq_len: int = 64,
     device: torch.device | None = None,
-) -> dict[str, any]:
+) -> dict[str, Any]:
     """Generate samples and compute simple diversity stats."""
     model_was_training = model.training
     model.eval()
