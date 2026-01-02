@@ -85,7 +85,7 @@ class TokenizedDataset(IterableDataset):
             dataset = dataset.shard(
                 num_shards=num_shards,
                 index=shard_id,
-                contiguous=True,
+                contiguous=False,
             )
         
         buffer = self.buffer
