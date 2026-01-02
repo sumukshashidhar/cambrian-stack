@@ -223,7 +223,6 @@ class NanochatGPT(BaseModel):
         loss = F.cross_entropy(
             logits.view(-1, self.config.vocab_size),
             targets.view(-1),
-            ignore_index=-1,
         )
         return logits, loss
 
