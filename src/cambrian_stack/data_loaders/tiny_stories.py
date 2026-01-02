@@ -5,7 +5,7 @@ This module handles:
 - Tokenization with GPT-2 tokenizer
 - Creating train/val dataloaders
 """
-from typing import Iterator
+from typing import Any, Iterator
 import re
 
 import torch
@@ -123,7 +123,7 @@ def get_tokenizer(name: str = "gpt2"):
     return tokenizer
 
 
-def get_dataloaders(cfg, accelerator=None) -> tuple[DataLoader, DataLoader, any]:
+def get_dataloaders(cfg, accelerator=None) -> tuple[DataLoader, DataLoader, Any]:
     """Create train and val dataloaders.
     
     Returns:
