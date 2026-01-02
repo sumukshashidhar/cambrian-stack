@@ -10,3 +10,4 @@ A minimal, hackable framework for transformer experiments. This documentation is
    quickstart
    configuration
    experiments
+   troubleshooting
