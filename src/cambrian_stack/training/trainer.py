@@ -216,7 +216,9 @@ def get_lr_multiplier(step: int, cfg: DictConfig) -> float:
         return step / max(1, warmup_steps)
     
     if warmdown_steps > 0 and step >= warmdown_start:
-        progress = (step - warmdown_start) / max(1, warmdown_steps)
+        # Include the final step in the warmdown so we actually reach final_lr_frac
+        progress = (step - warmdown_start + 1) / max(1, warmdown_steps)
+        progress = min(progress, 1.0)
         if schedule == "linear":
             return 1.0 - progress * (1 - cfg.training.final_lr_frac)
         cosine = 0.5 * (1 + math.cos(math.pi * progress))
