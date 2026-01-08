@@ -6,7 +6,7 @@ Each step is a well-named function that can be understood independently.
 import math
 import time
 from pathlib import Path
-from typing import List, Optional
+
 
 import torch
 from torch.optim import AdamW
@@ -84,7 +84,7 @@ def setup_accelerator() -> Accelerator:
     return Accelerator(mixed_precision="bf16")
 
 
-def create_optimizers(model: BaseModel, training_cfg) -> List[torch.optim.Optimizer]:
+def create_optimizers(model: BaseModel, training_cfg) -> list[torch.optim.Optimizer]:
     """Create Muon (matrix params) + AdamW (embedding/positional) optimizers."""
     # Learning rates (fallback to single lr if not provided)
     emb_lr = training_cfg.get("embedding_lr", training_cfg.learning_rate)
@@ -165,7 +165,7 @@ def create_optimizers(model: BaseModel, training_cfg) -> List[torch.optim.Optimi
         g["initial_lr"] = g["lr"]
     
     # Muon on matrix / rest
-    optimizers: List[torch.optim.Optimizer] = [adamw]
+    optimizers: list[torch.optim.Optimizer] = [adamw]
     if len(muon_params) > 0:
         muon = Muon(
             muon_params,
@@ -249,7 +249,7 @@ def train_loop(
     model,
     train_loader,
     val_loader,
-    optimizers: List[torch.optim.Optimizer],
+    optimizers: list[torch.optim.Optimizer],
     tokenizer,
     cfg: DictConfig,
     accelerator: Accelerator,
@@ -366,7 +366,7 @@ def train_loop(
 
 def save_checkpoint(
     model: BaseModel,
-    optimizers: List[torch.optim.Optimizer],
+    optimizers: list[torch.optim.Optimizer],
     step: int,
     cfg: DictConfig,
     accelerator: Accelerator,
@@ -390,7 +390,7 @@ def save_checkpoint(
     accelerator.wait_for_everyone()
 
 
-def load_checkpoint(path: Path, model: BaseModel, optimizers: List[torch.optim.Optimizer] | None = None) -> int:
+def load_checkpoint(path: Path, model: BaseModel, optimizers: list[torch.optim.Optimizer] | None = None) -> int:
     """Load model checkpoint. Returns the step number."""
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
