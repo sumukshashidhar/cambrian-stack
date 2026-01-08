@@ -49,8 +49,16 @@ NUM_PROCESSES=${NUM_PROCESSES:-$DEFAULT_NUM_PROCESSES}
 
 mkdir -p logs out
 
-DBS=$(python scripts/find_batch_size.py --seq-len 2048 --depth 16 --vocab-size 65536 --target-frac 0.7 --max-try 12 --model-type nanochat_gpt | awk '/Recommended device_batch_size/ {print $3}')
-[ -z "$DBS" ] && DBS=4
+DBS=$(python scripts/find_batch_size.py \
+  --seq-len 2048 \
+  --depth 16 \
+  --vocab-size 65536 \
+  --target-frac 0.7 \
+  --max-try 12 \
+  --model-type nanochat_gpt 2>&1 | awk -F 'Recommended device_batch_size: ' '/Recommended device_batch_size/ {print $2}' | awk '{print $1}')
+if [[ ! "${DBS}" =~ ^[0-9]+$ ]]; then
+  DBS=4
+fi
 
 ACCEL_ARGS=(--num_processes="${NUM_PROCESSES}" --main_process_port="${MAIN_PROCESS_PORT}")
 if [ "${NUM_PROCESSES}" -ge 2 ]; then

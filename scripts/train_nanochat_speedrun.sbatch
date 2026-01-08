@@ -79,6 +79,8 @@ apptainer exec --nv \
   --pwd "$REPO_DIR" \
   "$SIF" /bin/bash -lc '
     set -e
+    export SKIP_VENV=1
+    export PYTHON_BIN=python3
     export HF_HOME='"$HF_HOME"'
     export TRANSFORMERS_CACHE='"$TRANSFORMERS_CACHE"'
     export HF_HUB_CACHE='"$HF_HUB_CACHE"'

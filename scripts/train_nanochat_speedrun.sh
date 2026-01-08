@@ -12,7 +12,7 @@ REPO_DIR=${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}
 cd "$REPO_DIR"
 export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH}"
 
-if [ -f ".venv/bin/activate" ]; then
+if [ -z "${SKIP_VENV:-}" ] && [ -f ".venv/bin/activate" ]; then
   source .venv/bin/activate
 fi
 
@@ -78,8 +78,10 @@ else
     --vocab-size "${VOCAB_SIZE}" \
     --model-type nanochat_gpt \
     --target-frac "${TARGET_FRAC}" \
-    --max-try "${MAX_TRY}" 2>&1 | awk '/Recommended device_batch_size/ {print $3}')
-  [ -z "$DBS" ] && DBS=4
+    --max-try "${MAX_TRY}" 2>&1 | awk -F 'Recommended device_batch_size: ' '/Recommended device_batch_size/ {print $2}' | awk '{print $1}')
+  if [[ ! "${DBS}" =~ ^[0-9]+$ ]]; then
+    DBS=4
+  fi
 fi
 
 echo "INFO depth=${DEPTH} | seq=${MAX_SEQ_LEN} | vocab=${VOCAB_SIZE}"
