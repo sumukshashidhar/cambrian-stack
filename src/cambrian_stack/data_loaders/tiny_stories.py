@@ -1,9 +1,22 @@
 """TinyStories dataset loading.
 
 This module handles:
-- Loading TinyStories from HuggingFace
+- Loading TinyStories (or other HuggingFace datasets) via streaming
 - Tokenization with GPT-2 tokenizer
-- Creating train/val dataloaders
+- Creating train/val dataloaders with multi-worker support
+
+Streaming Notes:
+    We use HuggingFace's streaming mode to avoid downloading the full dataset.
+    When using multiple workers or distributed training, we shard the stream
+    using modulo-based sampling (contiguous=False) rather than contiguous chunks.
+    This is important because contiguous sharding on streaming datasets requires
+    computing shard boundaries, which can cause significant delays or hangs.
+
+Troubleshooting:
+    If training appears to hang after model initialization:
+    1. Check network connectivity to HuggingFace
+    2. Try setting num_workers=0 in data config to rule out multi-worker issues
+    3. Ensure HF_TOKEN is set if using gated datasets
 """
 from typing import Any, Iterator
 import re
@@ -20,7 +33,20 @@ load_dotenv()  # Load HF_TOKEN
 
 
 class TokenizedDataset(IterableDataset):
-    """Streaming tokenized dataset."""
+    """Streaming tokenized dataset.
+    
+    Streams text from HuggingFace, tokenizes on-the-fly, and yields
+    fixed-length sequences for language modeling.
+    
+    Args:
+        dataset_name: HuggingFace dataset identifier (e.g., "roneneldan/TinyStories")
+        split: Dataset split, optionally with slice (e.g., "train", "train[:10%]")
+        tokenizer: HuggingFace tokenizer instance
+        seq_len: Sequence length for input_ids and labels
+        accelerator: Optional Accelerate instance for distributed training
+        add_bos: Whether to prepend BOS token to each document
+        bos_token_id: BOS token ID (required if add_bos=True)
+    """
     
     def __init__(
         self,
@@ -82,10 +108,14 @@ class TokenizedDataset(IterableDataset):
             num_shards *= worker_info.num_workers
             shard_id = shard_id * worker_info.num_workers + worker_info.id
         if num_shards > 1:
+            # Use contiguous=False for streaming datasets to avoid computing
+            # shard boundaries, which can cause significant delays or hangs.
+            # With contiguous=False, sharding uses modulo sampling (example N
+            # goes to shard N % num_shards), which works instantly.
             dataset = dataset.shard(
                 num_shards=num_shards,
                 index=shard_id,
-                contiguous=True,
+                contiguous=False,
             )
         
         buffer = self.buffer
@@ -111,7 +141,14 @@ class TokenizedDataset(IterableDataset):
 
 
 def get_tokenizer(name: str = "gpt2"):
-    """Load tokenizer from HuggingFace."""
+    """Load tokenizer from HuggingFace.
+    
+    Args:
+        name: Tokenizer identifier (default: "gpt2")
+        
+    Returns:
+        Configured tokenizer with pad/bos tokens set
+    """
     tokenizer = AutoTokenizer.from_pretrained(name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -126,8 +163,12 @@ def get_tokenizer(name: str = "gpt2"):
 def get_dataloaders(cfg, accelerator=None) -> tuple[DataLoader, DataLoader, Any]:
     """Create train and val dataloaders.
     
+    Args:
+        cfg: Hydra config with data/model sections
+        accelerator: Optional Accelerate instance for distributed training
+    
     Returns:
-        train_loader, val_loader, tokenizer
+        Tuple of (train_loader, val_loader, tokenizer)
     """
     tokenizer = get_tokenizer(cfg.data.tokenizer_name)
     tokenizer.model_max_length = cfg.model.max_seq_len
