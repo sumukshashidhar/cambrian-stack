@@ -112,11 +112,24 @@ class TokenizedDataset(IterableDataset):
             # shard boundaries, which can cause significant delays or hangs.
             # With contiguous=False, sharding uses modulo sampling (example N
             # goes to shard N % num_shards), which works instantly.
-            dataset = dataset.shard(
-                num_shards=num_shards,
-                index=shard_id,
-                contiguous=False,
-            )
+            #
+            # However, if the dataset has fewer underlying data sources than
+            # num_shards (common with small validation sets), sharding will
+            # fail with IndexError. In that case, we skip sharding and let
+            # all workers see all data (acceptable for validation).
+            try:
+                dataset = dataset.shard(
+                    num_shards=num_shards,
+                    index=shard_id,
+                    contiguous=False,
+                )
+            except IndexError:
+                # Dataset has fewer shards than workers; skip sharding
+                logger.warning(
+                    f"Skipping sharding for {self.dataset_name}:{self.split} "
+                    f"(requested shard {shard_id}/{num_shards}, but dataset has fewer sources). "
+                    "All workers will see full data."
+                )
         
         buffer = self.buffer
         for sample in dataset:
