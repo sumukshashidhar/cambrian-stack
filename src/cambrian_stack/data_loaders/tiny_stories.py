@@ -125,7 +125,11 @@ class TokenizedDataset(IterableDataset):
                 )
             except IndexError:
                 # Dataset has fewer shards than workers; skip sharding
-                pass
+                logger.warning(
+                    f"Skipping sharding for {self.dataset_name}:{self.split} "
+                    f"(requested shard {shard_id}/{num_shards}, but dataset has fewer sources). "
+                    "All workers will see full data."
+                )
         
         buffer = self.buffer
         for sample in dataset:
