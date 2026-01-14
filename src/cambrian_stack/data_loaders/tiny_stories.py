@@ -34,10 +34,10 @@ load_dotenv()  # Load HF_TOKEN
 
 class TokenizedDataset(IterableDataset):
     """Streaming tokenized dataset.
-    
+
     Streams text from HuggingFace, tokenizes on-the-fly, and yields
     fixed-length sequences for language modeling.
-    
+
     Args:
         dataset_name: HuggingFace dataset identifier (e.g., "roneneldan/TinyStories")
         split: Dataset split, optionally with slice (e.g., "train", "train[:10%]")
@@ -47,7 +47,7 @@ class TokenizedDataset(IterableDataset):
         add_bos: Whether to prepend BOS token to each document
         bos_token_id: BOS token ID (required if add_bos=True)
     """
-    
+
     def __init__(
         self,
         dataset_name: str,
@@ -66,7 +66,7 @@ class TokenizedDataset(IterableDataset):
         self.accelerator = accelerator
         self.add_bos = add_bos
         self.bos_token_id = bos_token_id
-    
+
     def __iter__(self) -> Iterator[dict[str, Tensor]]:
         base_split = self.split
         limit = None
@@ -108,29 +108,31 @@ class TokenizedDataset(IterableDataset):
             num_shards *= worker_info.num_workers
             shard_id = shard_id * worker_info.num_workers + worker_info.id
         if num_shards > 1:
-            # Use contiguous=False for streaming datasets to avoid computing
-            # shard boundaries, which can cause significant delays or hangs.
-            # With contiguous=False, sharding uses modulo sampling (example N
-            # goes to shard N % num_shards), which works instantly.
-            #
-            # However, if the dataset has fewer underlying data sources than
-            # num_shards (common with small validation sets), sharding will
-            # fail with IndexError. In that case, we skip sharding and let
-            # all workers see all data (acceptable for validation).
-            try:
+            # Check if dataset has enough shards for the requested number of workers.
+            # When using .take() on a streaming dataset, it may have only 1 shard.
+            available_shards = getattr(dataset, "n_shards", num_shards)
+            if available_shards < num_shards:
+                # Not enough shards - only shard if this worker is within range
+                if shard_id < available_shards:
+                    dataset = dataset.shard(
+                        num_shards=available_shards,
+                        index=shard_id,
+                        contiguous=False,
+                    )
+                else:
+                    # This worker has no data - return empty iterator
+                    return
+            else:
+                # Use contiguous=False for streaming datasets to avoid computing
+                # shard boundaries, which can cause significant delays or hangs.
+                # With contiguous=False, sharding uses modulo sampling (example N
+                # goes to shard N % num_shards), which works instantly.
                 dataset = dataset.shard(
                     num_shards=num_shards,
                     index=shard_id,
                     contiguous=False,
                 )
-            except IndexError:
-                # Dataset has fewer shards than workers; skip sharding
-                logger.warning(
-                    f"Skipping sharding for {self.dataset_name}:{self.split} "
-                    f"(requested shard {shard_id}/{num_shards}, but dataset has fewer sources). "
-                    "All workers will see full data."
-                )
-        
+
         buffer = self.buffer
         for sample in dataset:
             text = sample["text"]
@@ -138,27 +140,27 @@ class TokenizedDataset(IterableDataset):
             if self.add_bos and self.bos_token_id is not None:
                 buffer.append(self.bos_token_id)
             buffer.extend(tokens)
-            
+
             while len(buffer) >= self.seq_len + 1:
                 x_tokens = buffer[: self.seq_len]
                 y_tokens = buffer[1 : self.seq_len + 1]
                 buffer = buffer[self.seq_len :]
-                
+
                 yield {
                     "input_ids": torch.tensor(x_tokens, dtype=torch.long),
                     "labels": torch.tensor(y_tokens, dtype=torch.long),
                 }
-        
+
         # Keep leftover buffer for next epoch
         self.buffer = buffer
 
 
 def get_tokenizer(name: str = "gpt2"):
     """Load tokenizer from HuggingFace.
-    
+
     Args:
         name: Tokenizer identifier (default: "gpt2")
-        
+
     Returns:
         Configured tokenizer with pad/bos tokens set
     """
@@ -175,17 +177,17 @@ def get_tokenizer(name: str = "gpt2"):
 
 def get_dataloaders(cfg, accelerator=None) -> tuple[DataLoader, DataLoader, Any]:
     """Create train and val dataloaders.
-    
+
     Args:
         cfg: Hydra config with data/model sections
         accelerator: Optional Accelerate instance for distributed training
-    
+
     Returns:
         Tuple of (train_loader, val_loader, tokenizer)
     """
     tokenizer = get_tokenizer(cfg.data.tokenizer_name)
     tokenizer.model_max_length = cfg.model.max_seq_len
-    
+
     add_bos = getattr(cfg.data, "add_bos", False)
     bos_id = getattr(tokenizer, "bos_token_id", None)
     train_dataset = TokenizedDataset(
@@ -206,7 +208,7 @@ def get_dataloaders(cfg, accelerator=None) -> tuple[DataLoader, DataLoader, Any]
         add_bos=add_bos,
         bos_token_id=bos_id,
     )
-    
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.training.device_batch_size,
@@ -221,5 +223,5 @@ def get_dataloaders(cfg, accelerator=None) -> tuple[DataLoader, DataLoader, Any]
         pin_memory=True,
         drop_last=True,
     )
-    
+
     return train_loader, val_loader, tokenizer
