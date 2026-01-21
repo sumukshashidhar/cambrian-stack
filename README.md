@@ -154,50 +154,6 @@ Make it executable: `chmod +x scripts/run_myname.sh`
 
 Then run with: `./scripts/run_myname.sh`
 
-### Troubleshooting
-
-#### Training hangs after "Starting baseline training..."
-
-**Symptoms:** Job starts, model initializes, but no training steps appear. May hang for 20+ minutes.
-
-**Cause:** This was a bug in dataset sharding when the validation set has fewer shards than dataloader workers.
-
-**Solution:** Make sure you have the latest code (`git pull`). The fix is in `src/cambrian_stack/data_loaders/tiny_stories.py`.
-
-#### "SIF environment variable not set"
-
-**Solution:** Set the SIF variable before submitting:
-```bash
-export SIF=/path/to/pytorch.sif
-sbatch -A <account> scripts/test_baseline.sbatch
-```
-
-#### "Invalid account or account/partition combination"
-
-**Solution:**
-1. Check your available accounts: `sacctmgr show associations user=$USER`
-2. Use the correct account with `-A`: `sbatch -A correct-account scripts/test_baseline.sbatch`
-
-#### Container can't access GPUs
-
-**Symptoms:** `torch.cuda.is_available()` returns `False` inside container.
-
-**Solution:** Ensure you're using the `--nv` flag with Apptainer:
-```bash
-apptainer exec --nv /path/to/pytorch.sif bash
-```
-
-#### Permission denied on cache directories
-
-**Solution:** Set `CACHE_DIR` to a directory you have write access to:
-```bash
-export CACHE_DIR=$SCRATCH/.cache  # or wherever you have write access
-```
-
-#### "Too many dataloader workers" warning
-
-This warning is **normal** and handled automatically. It appears when the validation dataset has fewer shards than workers. Training will continue normally.
-
 ### Quick Iteration Tips
 
 For faster debugging cycles:
