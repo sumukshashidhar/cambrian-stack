@@ -1,17 +1,17 @@
 #!/bin/bash
-#SBATCH -J cambrian-speedrun
-#SBATCH -p ghx4
-#SBATCH --gres=gpu:2
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-#SBATCH -t 24:00:00
+#SBATCH -J cambrian-baseline-test
+#SBATCH -p ghx4-interactive
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH -t 01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH -o logs/slurm-speedrun-%j.out
-#SBATCH -e logs/slurm-speedrun-%j.err
+#SBATCH -o logs/slurm-baseline-test-%j.out
+#SBATCH -e logs/slurm-baseline-test-%j.err
 
 # NOTE: You must specify your SLURM account when submitting:
-#   sbatch -A <your-account> scripts/train_nanochat_speedrun.sbatch
+#   sbatch -A <your-account> scripts/test_baseline.sbatch
 # Or set SBATCH_ACCOUNT in your environment.
 
 set -euo pipefail
@@ -23,7 +23,7 @@ REPO_DIR="${REPO_DIR:-${SLURM_SUBMIT_DIR:-.}}"
 SIF="${SIF:-}"
 if [[ -z "$SIF" ]]; then
   echo "ERROR: SIF environment variable not set. Please set it to your PyTorch Apptainer image path." >&2
-  echo "  Example: SIF=/path/to/pytorch.sif sbatch scripts/train_nanochat_speedrun.sbatch" >&2
+  echo "  Example: SIF=/path/to/pytorch.sif sbatch scripts/test_baseline.sbatch" >&2
   exit 1
 fi
 
@@ -56,18 +56,12 @@ export PYTHONUSERBASE="$GLOBAL_CACHE/python_user"
 mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$DATASETS_CACHE" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME" "$PIP_CACHE_DIR" "$PYTHONUSERBASE"
 
 export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29500}"
-
-# Match SLURM GPUs to accelerate
-if [[ -n "${SLURM_GPUS_ON_NODE:-}" ]]; then
-  export NUM_PROCESSES="$SLURM_GPUS_ON_NODE"
-elif [[ -n "${SLURM_GPUS_PER_NODE:-}" ]]; then
-  export NUM_PROCESSES="$SLURM_GPUS_PER_NODE"
-fi
+export NUM_PROCESSES=1
 
 echo "============================================================"
-echo "[$(date)] Starting Cambrian speedrun"
+echo "[$(date)] Starting Cambrian baseline test"
 echo "[$(date)] Node list: ${SLURM_NODELIST:-unknown}"
 echo "[$(date)] Job ID: ${SLURM_JOB_ID:-unknown}"
 echo "[$(date)] Repo: $REPO_DIR"
@@ -106,11 +100,24 @@ apptainer exec --nv \
     export PYTHONPATH="$(python3 -m site --user-site):$PYTHONPATH"
 
     cd "'"$REPO_DIR"'"
-    python3 -c "import torch; print(\"torch\", torch.__version__)"
+    echo "[$(date)] Python version:"
+    python3 --version
+    echo "[$(date)] Torch version:"
+    python3 -c "import torch; print(torch.__version__); print(f\"CUDA available: {torch.cuda.is_available()}\")"
 
     # Install cambrian deps into user base inside cache
-    python3 -m pip install --user -e .
-    python3 -m pip install --user accelerate
+    echo "[$(date)] Installing dependencies..."
+    python3 -m pip install --user -e . 2>&1 | tail -5
+    python3 -m pip install --user accelerate 2>&1 | tail -3
 
-    bash scripts/train_nanochat_speedrun.sh "$@"
+    echo "[$(date)] Starting baseline training (1 hour test)..."
+    python3 -m cambrian_stack.train \
+      training.max_steps=3000 \
+      training.eval_every=500 \
+      training.save_every=0 \
+      training.sample_every=0 \
+      logging.wandb_run=baseline-test-$(date +%Y%m%d-%H%M%S) \
+      output.dir=out/baseline-test
   '
+
+echo "[$(date)] Done!"

@@ -1,8 +1,8 @@
 # Cambrian Stack
 
-Minimal, hackable transformer experiments. For full docs, see **https://<your-pages-url>** (built from `docs/` via GitHub Pages).
+Minimal, hackable transformer experiments.
 
-## Quick start
+## Quick Start (Local)
 
 ```bash
 git clone <repo-url> && cd cambrian-stack
@@ -14,6 +14,213 @@ python -m cambrian_stack.train --config-name=diffusion_transformer  # diffusion
 ```
 
 Outputs: checkpoints in `out/`, logs in `logs/`, optional W&B if `WANDB_API_KEY` is set.
+
+---
+
+## Running on SLURM (HPC Clusters)
+
+This section explains how to run training jobs on SLURM-managed HPC clusters using Apptainer (formerly Singularity) containers.
+
+### Prerequisites
+
+Before you start, ensure you have:
+
+1. **Apptainer/Singularity container** with PyTorch
+   - Example: NGC PyTorch container converted to SIF format
+   - The container must have PyTorch with CUDA support
+
+2. **SLURM account** with GPU partition access
+   - Know your account name (e.g., `mygroup-gpu`)
+   - Know available partitions (e.g., `ghx4`, `ghx4-interactive`)
+
+3. **Environment file** (optional but recommended)
+   - Create `.env` in the repo root with:
+     ```bash
+     WANDB_API_KEY=your_wandb_key
+     HF_TOKEN=your_huggingface_token
+     ```
+
+### Environment Variables
+
+The SLURM scripts use these environment variables:
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|---------|
+| `SIF` | **Yes** | Path to PyTorch Apptainer/Singularity image | `/scratch/containers/pytorch.sif` |
+| `CACHE_DIR` | No | Cache directory for HuggingFace, pip, etc. Defaults to `.cache/` in repo | `/scratch/myuser/.cache` |
+| `SBATCH_ACCOUNT` | No | Default SLURM account (alternative to `-A` flag) | `mygroup-gpu` |
+
+### Option 1: Batch Job Submission
+
+This is the standard way to run training jobs.
+
+**Step 1:** Set your environment variables
+
+```bash
+export SIF=/path/to/your/pytorch.sif
+export CACHE_DIR=/path/to/cache   # optional, but recommended for shared systems
+```
+
+**Step 2:** Submit the job
+
+```bash
+# From the repo root directory:
+sbatch -A <your-account> scripts/test_baseline.sbatch
+```
+
+**Step 3:** Monitor the job
+
+```bash
+# Check job status
+squeue -u $USER
+
+# Watch training progress (training logs go to stderr)
+tail -f logs/slurm-baseline-test-<jobid>.err
+
+# Watch job output (setup, GPU info, etc.)
+tail -f logs/slurm-baseline-test-<jobid>.out
+```
+
+#### Available Scripts
+
+| Script | Description | Duration | GPUs |
+|--------|-------------|----------|------|
+| `scripts/test_baseline.sbatch` | Sanity check run | 1 hour | 1 |
+| `scripts/train_nanochat_speedrun.sbatch` | Full training run | 24 hours | 2 |
+
+### Option 2: Interactive Sessions
+
+For debugging, development, or when you want to see output in real-time.
+
+**Step 1:** Request an interactive GPU session
+
+```bash
+srun -A <your-account> \
+     -p ghx4-interactive \
+     --gres=gpu:1 \
+     --mem=32G \
+     --cpus-per-task=8 \
+     --time=02:00:00 \
+     --pty bash
+```
+
+**Step 2:** Once on the GPU node, start the container
+
+```bash
+apptainer exec --nv /path/to/pytorch.sif bash
+```
+
+The `--nv` flag is **required** - it enables GPU access inside the container.
+
+**Step 3:** Inside the container, set up and run
+
+```bash
+cd /path/to/cambrian-stack
+
+# Install the package (first time only, or after code changes)
+pip install --user -e .
+pip install --user accelerate
+
+# Run training
+python -m cambrian_stack.train training.max_steps=100
+```
+
+#### One-liner for Interactive Training
+
+```bash
+srun -A <your-account> -p ghx4-interactive --gres=gpu:1 --mem=32G --time=02:00:00 \
+  apptainer exec --nv /path/to/pytorch.sif bash -c '
+    cd /path/to/cambrian-stack
+    pip install --user -e . && pip install --user accelerate
+    python -m cambrian_stack.train training.max_steps=100
+  '
+```
+
+### Creating a Wrapper Script
+
+For convenience, create a personal wrapper script:
+
+```bash
+#!/bin/bash
+# scripts/run_myname.sh - Personal wrapper for <your-name>
+
+export SIF=/path/to/your/pytorch.sif
+export CACHE_DIR=/path/to/your/cache
+
+sbatch -A your-account scripts/test_baseline.sbatch "$@"
+```
+
+Make it executable: `chmod +x scripts/run_myname.sh`
+
+Then run with: `./scripts/run_myname.sh`
+
+### Troubleshooting
+
+#### Training hangs after "Starting baseline training..."
+
+**Symptoms:** Job starts, model initializes, but no training steps appear. May hang for 20+ minutes.
+
+**Cause:** This was a bug in dataset sharding when the validation set has fewer shards than dataloader workers.
+
+**Solution:** Make sure you have the latest code (`git pull`). The fix is in `src/cambrian_stack/data_loaders/tiny_stories.py`.
+
+#### "SIF environment variable not set"
+
+**Solution:** Set the SIF variable before submitting:
+```bash
+export SIF=/path/to/pytorch.sif
+sbatch -A <account> scripts/test_baseline.sbatch
+```
+
+#### "Invalid account or account/partition combination"
+
+**Solution:**
+1. Check your available accounts: `sacctmgr show associations user=$USER`
+2. Use the correct account with `-A`: `sbatch -A correct-account scripts/test_baseline.sbatch`
+
+#### Container can't access GPUs
+
+**Symptoms:** `torch.cuda.is_available()` returns `False` inside container.
+
+**Solution:** Ensure you're using the `--nv` flag with Apptainer:
+```bash
+apptainer exec --nv /path/to/pytorch.sif bash
+```
+
+#### Permission denied on cache directories
+
+**Solution:** Set `CACHE_DIR` to a directory you have write access to:
+```bash
+export CACHE_DIR=$SCRATCH/.cache  # or wherever you have write access
+```
+
+#### "Too many dataloader workers" warning
+
+This warning is **normal** and handled automatically. It appears when the validation dataset has fewer shards than workers. Training will continue normally.
+
+### Quick Iteration Tips
+
+For faster debugging cycles:
+
+```bash
+# Use a smaller model
+python -m cambrian_stack.train model.depth=4
+
+# Fewer training steps
+python -m cambrian_stack.train training.max_steps=50 training.eval_every=25
+
+# Disable saving and sampling
+python -m cambrian_stack.train training.save_every=0 training.sample_every=0
+
+# Combine for fast iteration
+python -m cambrian_stack.train \
+  model.depth=4 \
+  training.max_steps=50 \
+  training.eval_every=25 \
+  training.save_every=0
+```
+
+---
 
 ## Configs
 
